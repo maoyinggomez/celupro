@@ -87,6 +87,31 @@ async function loadPage(page) {
     }
     
     mainContent.innerHTML = content;
+    
+    // Agregar listeners después de cargar el contenido
+    if (page === 'ingreso') {
+        const form = document.getElementById('ingresoForm');
+        if (form) {
+            form.addEventListener('submit', submitIngreso);
+        }
+        
+        // Agregar listener al checkbox de clave
+        const tieneClaveCheckbox = document.getElementById('tiene_clave');
+        if (tieneClaveCheckbox) {
+            tieneClaveCheckbox.addEventListener('change', function() {
+                const div = document.getElementById('claveDiv');
+                if (div) {
+                    div.style.display = this.checked ? 'block' : 'none';
+                }
+            });
+        }
+        
+        // Agregar listener al cambio de marca
+        const marcaSelect = document.getElementById('marca_id');
+        if (marcaSelect) {
+            marcaSelect.addEventListener('change', loadModelosByMarca);
+        }
+    }
 }
 
 async function loadDashboard() {
@@ -339,29 +364,34 @@ async function loadIngresoForm() {
                 <i class="fas fa-save me-2"></i> Crear Ingreso
             </button>
         </form>
-        
-        <script>
-            document.getElementById('ingresoForm').addEventListener('submit', submitIngreso);
-            
-            function toggleClave() {
-                const div = document.getElementById('claveDiv');
-                div.style.display = document.getElementById('tiene_clave').checked ? 'block' : 'none';
-            }
-        </script>
     `;
 }
 
 async function loadModelosByMarca() {
     const marcaId = document.getElementById('marca_id').value;
-    if (!marcaId) return;
+    console.log('DEBUG loadModelosByMarca: marcaId=', marcaId);
+    
+    if (!marcaId) {
+        console.log('DEBUG: marcaId está vacío, retornando');
+        return;
+    }
     
     const modelos = await apiCall(`/marcas/${marcaId}/modelos`);
+    console.log('DEBUG: modelos recibidos:', modelos);
+    
     const select = document.getElementById('modelo_id');
     
-    select.innerHTML = '<option value="">Seleccione un modelo</option>' +
-        (Array.isArray(modelos) ? modelos.map(m => 
-            `<option value="${m.id}">${m.nombre}</option>`
-        ).join('') : '');
+    if (!Array.isArray(modelos) || modelos.length === 0) {
+        console.log('DEBUG: No hay modelos o respuesta inválida');
+        select.innerHTML = '<option value="">No hay modelos disponibles</option>';
+        return;
+    }
+    
+    const html = '<option value="">Seleccione un modelo</option>' +
+        modelos.map(m => `<option value="${m.id}">${m.nombre}</option>`).join('');
+    
+    console.log('DEBUG: Estableciendo HTML del select:', html);
+    select.innerHTML = html;
 }
 
 async function submitIngreso(e) {
@@ -370,9 +400,21 @@ async function submitIngreso(e) {
     const fallasSeleccionadas = Array.from(document.querySelectorAll('.falla-checkbox:checked'))
         .map(cb => parseInt(cb.value));
     
+    // Obtener valores del formulario
+    const marcaValue = document.getElementById('marca_id').value;
+    const modeloValue = document.getElementById('modelo_id').value;
+    
+    console.log('DEBUG submitIngreso:');
+    console.log('  marca_id elemento:', document.getElementById('marca_id'));
+    console.log('  marca_id.value:', marcaValue);
+    console.log('  modelo_id elemento:', document.getElementById('modelo_id'));
+    console.log('  modelo_id.value:', modeloValue);
+    console.log('  marca_id options:', Array.from(document.getElementById('marca_id').options).map(o => `${o.value}:${o.text}`));
+    console.log('  modelo_id options:', Array.from(document.getElementById('modelo_id').options).map(o => `${o.value}:${o.text}`));
+    
     const datos = {
-        marca_id: parseInt(document.getElementById('marca_id').value),
-        modelo_id: parseInt(document.getElementById('modelo_id').value),
+        marca_id: parseInt(marcaValue),
+        modelo_id: parseInt(modeloValue),
         cliente_nombre: document.getElementById('cliente_nombre').value,
         cliente_apellido: document.getElementById('cliente_apellido').value,
         cliente_cedula: document.getElementById('cliente_cedula').value,
@@ -390,6 +432,16 @@ async function submitIngreso(e) {
         fallas_iniciales: fallasSeleccionadas
     };
     
+    console.log('DEBUG: datos completos:', datos);
+    
+    // Validar campos requeridos
+    if (!datos.marca_id || !datos.modelo_id || !datos.cliente_nombre || 
+        !datos.cliente_apellido || !datos.cliente_cedula) {
+        showAlert('Por favor complete todos los campos requeridos (Marca, Modelo, Nombre, Apellido, Cédula)', 'danger');
+        return;
+    }
+    
+    console.log('DEBUG: Validación pasada, enviando datos al servidor');
     showLoading(true);
     
     const response = await apiCall('/ingresos', {
@@ -397,14 +449,22 @@ async function submitIngreso(e) {
         body: JSON.stringify(datos)
     });
     
+    console.log('DEBUG: Respuesta recibida:', response);
     showLoading(false);
     
-    if (response.numero_ingreso) {
+    if (response && response.numero_ingreso) {
         showAlert(`¡Ingreso creado exitosamente! Número: ${response.numero_ingreso}`, 'success');
         document.getElementById('ingresoForm').reset();
         setTimeout(() => loadPage('registros'), 2000);
+    } else if (response && response.error) {
+        showAlert('Error: ' + response.error, 'danger');
+    } else if (response && response.id) {
+        showAlert(`¡Ingreso creado! Número: ${response.numero_ingreso || 'sin número'}`, 'success');
+        document.getElementById('ingresoForm').reset();
+        setTimeout(() => loadPage('registros'), 2000);
     } else {
-        showAlert(response.error || 'Error al crear ingreso', 'danger');
+        showAlert('Error desconocido al crear ingreso', 'danger');
+        console.error('Respuesta inesperada:', response);
     }
 }
 
@@ -412,8 +472,27 @@ async function loadRegistros() {
     const page = 1;
     const response = await apiCall(`/ingresos?page=${page}&limit=20`);
     
-    if (!response.data) {
-        return '<div class="alert alert-danger">Error al cargar registros</div>';
+    console.log('DEBUG: Respuesta loadRegistros:', response);
+    
+    if (!response) {
+        return '<div class="alert alert-danger">Error: No se pudo conectar con el servidor</div>';
+    }
+    
+    if (response.error) {
+        return `<div class="alert alert-danger">Error: ${response.error}</div>`;
+    }
+    
+    if (!response.data || !Array.isArray(response.data)) {
+        return '<div class="alert alert-danger">Error: No hay datos de ingresos. Respuesta: ' + JSON.stringify(response) + '</div>';
+    }
+    
+    if (response.data.length === 0) {
+        return `
+            <h2 class="mb-4">Registros de Ingresos</h2>
+            <div class="alert alert-info">
+                No hay registros de ingresos aún. <a href="#" onclick="loadPage('ingreso')">Crear uno ahora</a>
+            </div>
+        `;
     }
     
     return `
@@ -459,18 +538,20 @@ async function loadRegistros() {
                         </tr>
                     </thead>
                     <tbody>
-                        ${response.data.map(ingreso => `
+                        ${response.data.map((ingreso, idx) => {
+                            try {
+                                return `
                             <tr>
-                                <td><strong>${ingreso.numero_ingreso}</strong></td>
-                                <td>${ingreso.cliente_nombre} ${ingreso.cliente_apellido}</td>
-                                <td>${new Date(ingreso.fecha_ingreso).toLocaleDateString()}</td>
+                                <td><strong>${ingreso.numero_ingreso || 'N/A'}</strong></td>
+                                <td>${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}</td>
+                                <td>${ingreso.fecha_ingreso ? new Date(ingreso.fecha_ingreso).toLocaleDateString() : 'N/A'}</td>
                                 <td>${ingreso.marca || 'N/A'}</td>
                                 <td>
                                     <span class="badge bg-${getStatusColor(ingreso.estado_ingreso)}">
-                                        ${ingreso.estado_ingreso}
+                                        ${ingreso.estado_ingreso || 'pendiente'}
                                     </span>
                                 </td>
-                                <td>$${ingreso.valor_total ? ingreso.valor_total.toLocaleString() : '0'}</td>
+                                <td>$${ingreso.valor_total ? parseFloat(ingreso.valor_total).toLocaleString('es-CO') : '0'}</td>
                                 <td>
                                     <button class="btn btn-sm btn-info" 
                                             onclick="verDetalles(${ingreso.id})">
@@ -484,12 +565,17 @@ async function loadRegistros() {
                                     ` : ''}
                                 </td>
                             </tr>
-                        `).join('')}
+                        `;
+                            } catch (e) {
+                                console.error('Error renderizando ingreso ' + idx + ':', e, ingreso);
+                                return `<tr><td colspan="7"><span class="text-danger">Error renderizando ingreso ${idx}: ${e.message}</span></td></tr>`;
+                            }
+                        }).join('')}
                     </tbody>
                 </table>
             </div>
             <div class="card-footer">
-                <small>Total: ${response.total} ingresos</small>
+                <small>Total: ${response.total} ingresos | Página ${response.page} de ${response.pages}</small>
             </div>
         </div>
         
@@ -556,7 +642,7 @@ async function loadAdminPanel() {
             </li>
             <li class="nav-item">
                 <a class="nav-link" data-bs-toggle="tab" href="#marcas">
-                    <i class="fas fa-mobile-alt me-2"></i> Marcas
+                    <i class="fas fa-mobile-alt me-2"></i> Marcas y Modelos
                 </a>
             </li>
             <li class="nav-item">
@@ -672,58 +758,108 @@ async function loadAdminMarcas() {
     const marcas = await apiCall('/marcas');
     
     return `
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">Gestión de Marcas</h5>
-                <button class="btn btn-success btn-sm" onclick="toggleMarcaForm()">
-                    <i class="fas fa-plus me-2"></i> Nueva Marca
-                </button>
-            </div>
-            <div class="card-body">
-                <!-- Formulario Inline (oculto por defecto) -->
-                <div id="marcaFormContainer" class="border p-3 mb-3 bg-light" style="display: none;">
-                    <h6 class="mb-3">Agregar Nueva Marca</h6>
-                    <form id="newMarcaForm" onsubmit="submitNewMarca(event); return false;">
-                        <div class="row">
-                            <div class="col-md-8 mb-2">
-                                <label class="form-label">Nombre de la Marca *</label>
-                                <input type="text" class="form-control form-control-sm" id="newMarcaNombre" 
-                                       placeholder="Ej: Samsung, Apple, Motorola" required>
-                                <small class="text-muted">Ingrese el nombre de la marca del fabricante</small>
-                            </div>
+        <div class="row">
+            <div class="col-lg-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Gestión de Marcas</h5>
+                        <button class="btn btn-success btn-sm" onclick="toggleMarcaForm()">
+                            <i class="fas fa-plus me-2"></i> Nueva Marca
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <!-- Formulario Inline (oculto por defecto) -->
+                        <div id="marcaFormContainer" class="border p-3 mb-3 bg-light" style="display: none;">
+                            <h6 class="mb-3">Agregar Nueva Marca</h6>
+                            <form id="newMarcaForm" onsubmit="submitNewMarca(event); return false;">
+                                <div class="row">
+                                    <div class="col-md-12 mb-2">
+                                        <label class="form-label">Nombre de la Marca *</label>
+                                        <input type="text" class="form-control form-control-sm" id="newMarcaNombre" 
+                                               placeholder="Ej: Samsung, Apple, Motorola" required>
+                                        <small class="text-muted">Ingrese el nombre de la marca del fabricante</small>
+                                    </div>
+                                </div>
+                                <div class="mt-3">
+                                    <button type="submit" class="btn btn-primary btn-sm">
+                                        <i class="fas fa-save me-1"></i> Guardar
+                                    </button>
+                                    <button type="button" class="btn btn-secondary btn-sm ms-2" onclick="toggleMarcaForm()">
+                                        <i class="fas fa-times me-1"></i> Cancelar
+                                    </button>
+                                </div>
+                            </form>
                         </div>
-                        <div class="mt-3">
-                            <button type="submit" class="btn btn-primary btn-sm">
-                                <i class="fas fa-save me-1"></i> Guardar
-                            </button>
-                            <button type="button" class="btn btn-secondary btn-sm ms-2" onclick="toggleMarcaForm()">
-                                <i class="fas fa-times me-1"></i> Cancelar
-                            </button>
-                        </div>
-                    </form>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Nombre</th>
+                                    <th width="200">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${Array.isArray(marcas) ? marcas.map(m => `
+                                    <tr>
+                                        <td>${m.nombre}</td>
+                                        <td>
+                                            <button class="btn btn-sm btn-info me-1" onclick="showModelosForMarca(${m.id}, '${m.nombre}')">
+                                                <i class="fas fa-list"></i> Ver Modelos
+                                            </button>
+                                            <button class="btn btn-sm btn-danger" onclick="deleteMarca(${m.id}, '${m.nombre}')">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="2" class="text-center">No hay marcas</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
-            <div class="table-responsive">
-                <table class="table table-sm table-hover mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Nombre</th>
-                            <th width="200">Acciones</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${Array.isArray(marcas) ? marcas.map(m => `
-                            <tr>
-                                <td>${m.nombre}</td>
-                                <td>
-                                    <button class="btn btn-sm btn-danger" onclick="deleteMarca(${m.id}, '${m.nombre}')">
-                                        <i class="fas fa-trash"></i> Eliminar
+            
+            <div class="col-lg-6">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Gestión de Modelos</h5>
+                        <button class="btn btn-success btn-sm" onclick="toggleModeloForm()">
+                            <i class="fas fa-plus me-2"></i> Nuevo Modelo
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="modeloFormContainer" class="border p-3 mb-3 bg-light" style="display: none;">
+                            <h6 class="mb-3">Agregar Nuevo Modelo</h6>
+                            <form id="newModeloForm" onsubmit="submitNewModelo(event); return false;">
+                                <div class="row">
+                                    <div class="col-md-12 mb-2">
+                                        <label class="form-label">Marca *</label>
+                                        <select class="form-select form-select-sm" id="newModeloMarca" required>
+                                            <option value="">Seleccione una marca</option>
+                                            ${Array.isArray(marcas) ? marcas.map(m => `<option value="${m.id}">${m.nombre}</option>`).join('') : ''}
+                                        </select>
+                                    </div>
+                                    <div class="col-md-12 mb-2">
+                                        <label class="form-label">Nombre del Modelo *</label>
+                                        <input type="text" class="form-control form-control-sm" id="newModeloNombre" 
+                                               placeholder="Ej: Galaxy S21, iPhone 13" required>
+                                    </div>
+                                </div>
+                                <div class="mt-3">
+                                    <button type="submit" class="btn btn-primary btn-sm">
+                                        <i class="fas fa-save me-1"></i> Guardar
                                     </button>
-                                </td>
-                            </tr>
-                        `).join('') : '<tr><td colspan="2" class="text-center">No hay marcas</td></tr>'}
-                    </tbody>
-                </table>
+                                    <button type="button" class="btn btn-secondary btn-sm ms-2" onclick="toggleModeloForm()">
+                                        <i class="fas fa-times me-1"></i> Cancelar
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                        <div id="modelosListContainer">
+                            <p class="text-muted text-center">Selecciona una marca para ver sus modelos</p>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     `;
@@ -1402,6 +1538,97 @@ async function deleteMarca(id, nombre) {
         }
     } catch (error) {
         console.error('Error al eliminar marca:', error);
+        showAlert('Error al conectar con el servidor', 'danger');
+    }
+}
+
+// ===== FUNCIONES DE MODELOS =====
+function toggleModeloForm() {
+    const form = document.getElementById('modeloFormContainer');
+    if (form.style.display === 'none') {
+        form.style.display = 'block';
+        document.getElementById('newModeloForm').reset();
+    } else {
+        form.style.display = 'none';
+    }
+}
+
+async function showModelosForMarca(marcaId, marcaNombre) {
+    const modelos = await apiCall(`/marcas/${marcaId}/modelos`);
+    const container = document.getElementById('modelosListContainer');
+    
+    let html = `<h6 class="mb-3">Modelos de ${marcaNombre}</h6>`;
+    
+    if (Array.isArray(modelos) && modelos.length > 0) {
+        html += `<table class="table table-sm">
+                    <tbody>
+                        ${modelos.map(m => `
+                            <tr>
+                                <td>${m.nombre}</td>
+                                <td width="80">
+                                    <button class="btn btn-sm btn-danger" onclick="deleteModelo(${m.id}, '${m.nombre}')">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>`;
+    } else {
+        html += `<p class="text-muted">No hay modelos para esta marca</p>`;
+    }
+    
+    container.innerHTML = html;
+}
+
+async function submitNewModelo(event) {
+    event.preventDefault();
+    
+    const marcaId = parseInt(document.getElementById('newModeloMarca').value);
+    const nombre = document.getElementById('newModeloNombre').value.trim();
+    
+    if (!marcaId || !nombre) {
+        showAlert('Todos los campos son obligatorios', 'danger');
+        return;
+    }
+    
+    try {
+        const response = await apiCall('/modelos', {
+            method: 'POST',
+            body: JSON.stringify({ marca_id: marcaId, nombre })
+        });
+        
+        if (response && response.id) {
+            showAlert(`Modelo "${nombre}" agregado correctamente`, 'success');
+            toggleModeloForm();
+            loadPage('admin');
+        } else if (response && response.error) {
+            showAlert(response.error, 'danger');
+        } else {
+            showAlert('Error al agregar modelo', 'danger');
+        }
+    } catch (error) {
+        console.error('Error al agregar modelo:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+async function deleteModelo(id, nombre) {
+    if (!confirm(`¿Eliminar el modelo "${nombre}"?`)) return;
+    
+    try {
+        const response = await apiCall(`/modelos/${id}`, {
+            method: 'DELETE'
+        });
+        
+        if (response && response.success) {
+            showAlert(`Modelo "${nombre}" eliminado`, 'success');
+            loadPage('admin');
+        } else {
+            showAlert(response?.error || 'Error al eliminar modelo', 'danger');
+        }
+    } catch (error) {
+        console.error('Error al eliminar modelo:', error);
         showAlert('Error al conectar con el servidor', 'danger');
     }
 }
