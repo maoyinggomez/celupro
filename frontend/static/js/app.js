@@ -593,19 +593,59 @@ async function loadAdminUsuarios() {
     
     return `
         <div class="card">
-            <div class="card-header">
-                <button class="btn btn-success btn-sm" onclick="showNewUserModal()">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Gestión de Usuarios</h5>
+                <button class="btn btn-success btn-sm" onclick="toggleUserForm()">
                     <i class="fas fa-plus me-2"></i> Nuevo Usuario
                 </button>
             </div>
+            <div class="card-body">
+                <!-- Formulario Inline (oculto por defecto) -->
+                <div id="userFormContainer" class="border p-3 mb-3 bg-light" style="display: none;">
+                    <h6 class="mb-3">Agregar Nuevo Usuario</h6>
+                    <form id="newUserForm" onsubmit="submitNewUser(event); return false;">
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Usuario *</label>
+                                <input type="text" class="form-control form-control-sm" id="newUserUsuario" required>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Nombre Completo *</label>
+                                <input type="text" class="form-control form-control-sm" id="newUserNombre" required>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Contraseña *</label>
+                                <input type="password" class="form-control form-control-sm" id="newUserPassword" required minlength="6">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Rol *</label>
+                                <select class="form-select form-select-sm" id="newUserRol" required>
+                                    <option value="">Seleccione...</option>
+                                    <option value="admin">Administrador</option>
+                                    <option value="empleado">Empleado</option>
+                                    <option value="tecnico">Técnico</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <button type="submit" class="btn btn-primary btn-sm">
+                                <i class="fas fa-save me-1"></i> Guardar
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-sm ms-2" onclick="toggleUserForm()">
+                                <i class="fas fa-times me-1"></i> Cancelar
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
             <div class="table-responsive">
-                <table class="table table-sm mb-0">
-                    <thead>
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light">
                         <tr>
                             <th>Usuario</th>
                             <th>Nombre</th>
                             <th>Rol</th>
-                            <th>Acciones</th>
+                            <th width="200">Acciones</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -615,11 +655,12 @@ async function loadAdminUsuarios() {
                                 <td>${u.nombre}</td>
                                 <td><span class="badge bg-info">${u.rol}</span></td>
                                 <td>
-                                    <button class="btn btn-sm btn-warning" onclick="editUser(${u.id})">Editar</button>
-                                    <button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id})">Eliminar</button>
+                                    <button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id}, '${u.usuario}')">
+                                        <i class="fas fa-trash"></i> Eliminar
+                                    </button>
                                 </td>
                             </tr>
-                        `).join('') : ''}
+                        `).join('') : '<tr><td colspan="4" class="text-center">No hay usuarios</td></tr>'}
                     </tbody>
                 </table>
             </div>
@@ -632,17 +673,42 @@ async function loadAdminMarcas() {
     
     return `
         <div class="card">
-            <div class="card-header">
-                <button class="btn btn-success btn-sm" onclick="showNewMarcaModal()">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Gestión de Marcas</h5>
+                <button class="btn btn-success btn-sm" onclick="toggleMarcaForm()">
                     <i class="fas fa-plus me-2"></i> Nueva Marca
                 </button>
             </div>
+            <div class="card-body">
+                <!-- Formulario Inline (oculto por defecto) -->
+                <div id="marcaFormContainer" class="border p-3 mb-3 bg-light" style="display: none;">
+                    <h6 class="mb-3">Agregar Nueva Marca</h6>
+                    <form id="newMarcaForm" onsubmit="submitNewMarca(event); return false;">
+                        <div class="row">
+                            <div class="col-md-8 mb-2">
+                                <label class="form-label">Nombre de la Marca *</label>
+                                <input type="text" class="form-control form-control-sm" id="newMarcaNombre" 
+                                       placeholder="Ej: Samsung, Apple, Motorola" required>
+                                <small class="text-muted">Ingrese el nombre de la marca del fabricante</small>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <button type="submit" class="btn btn-primary btn-sm">
+                                <i class="fas fa-save me-1"></i> Guardar
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-sm ms-2" onclick="toggleMarcaForm()">
+                                <i class="fas fa-times me-1"></i> Cancelar
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
             <div class="table-responsive">
-                <table class="table table-sm mb-0">
-                    <thead>
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light">
                         <tr>
                             <th>Nombre</th>
-                            <th>Acciones</th>
+                            <th width="200">Acciones</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -650,12 +716,12 @@ async function loadAdminMarcas() {
                             <tr>
                                 <td>${m.nombre}</td>
                                 <td>
-                                    <button class="btn btn-sm btn-info" onclick="editMarca(${m.id})">Modelos</button>
-                                    <button class="btn btn-sm btn-warning" onclick="editMarcaName(${m.id})">Editar</button>
-                                    <button class="btn btn-sm btn-danger" onclick="deleteMarca(${m.id})">Eliminar</button>
+                                    <button class="btn btn-sm btn-danger" onclick="deleteMarca(${m.id}, '${m.nombre}')">
+                                        <i class="fas fa-trash"></i> Eliminar
+                                    </button>
                                 </td>
                             </tr>
-                        `).join('') : ''}
+                        `).join('') : '<tr><td colspan="2" class="text-center">No hay marcas</td></tr>'}
                     </tbody>
                 </table>
             </div>
@@ -668,19 +734,53 @@ async function loadAdminFallas() {
     
     return `
         <div class="card">
-            <div class="card-header">
-                <button class="btn btn-success btn-sm" onclick="showNewFallaModal()">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Catálogo de Fallas</h5>
+                <button class="btn btn-success btn-sm" onclick="toggleFallaForm()">
                     <i class="fas fa-plus me-2"></i> Nueva Falla
                 </button>
             </div>
+            <div class="card-body">
+                <!-- Formulario Inline (oculto por defecto) -->
+                <div id="fallaFormContainer" class="border p-3 mb-3 bg-light" style="display: none;">
+                    <h6 class="mb-3">Agregar Nueva Falla</h6>
+                    <form id="newFallaForm" onsubmit="submitNewFalla(event); return false;">
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Nombre de la Falla *</label>
+                                <input type="text" class="form-control form-control-sm" id="newFallaNombre" 
+                                       placeholder="Ej: Pantalla rota, Batería" required>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Precio Sugerido *</label>
+                                <input type="number" class="form-control form-control-sm" id="newFallaPrecio" 
+                                       placeholder="0" min="0" step="100" required>
+                            </div>
+                            <div class="col-md-12 mb-2">
+                                <label class="form-label">Descripción</label>
+                                <textarea class="form-control form-control-sm" id="newFallaDescripcion" 
+                                          rows="2" placeholder="Descripción opcional"></textarea>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <button type="submit" class="btn btn-primary btn-sm">
+                                <i class="fas fa-save me-1"></i> Guardar
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-sm ms-2" onclick="toggleFallaForm()">
+                                <i class="fas fa-times me-1"></i> Cancelar
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
             <div class="table-responsive">
-                <table class="table table-sm mb-0">
-                    <thead>
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light">
                         <tr>
                             <th>Nombre</th>
                             <th>Descripción</th>
                             <th>Precio</th>
-                            <th>Acciones</th>
+                            <th width="150">Acciones</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -690,11 +790,12 @@ async function loadAdminFallas() {
                                 <td>${f.descripcion || 'N/A'}</td>
                                 <td>$${f.precio_sugerido || 0}</td>
                                 <td>
-                                    <button class="btn btn-sm btn-warning" onclick="editFalla(${f.id})">Editar</button>
-                                    <button class="btn btn-sm btn-danger" onclick="deleteFalla(${f.id})">Eliminar</button>
+                                    <button class="btn btn-sm btn-danger" onclick="deleteFalla(${f.id}, '${f.nombre}')">
+                                        <i class="fas fa-trash"></i> Eliminar
+                                    </button>
                                 </td>
                             </tr>
-                        `).join('') : ''}
+                        `).join('') : '<tr><td colspan="4" class="text-center">No hay fallas</td></tr>'}
                     </tbody>
                 </table>
             </div>
@@ -1173,53 +1274,203 @@ function removeFalla(id) { showAlert('Función en desarrollo', 'info'); }
 function updateIngresoEstado(id) { showAlert('Función en desarrollo', 'info'); }
 
 // Función para agregar nuevo usuario
-async function showNewUserModal() {
-    const usuario = prompt('Ingresa el nombre de usuario:');
-    if (!usuario || usuario.trim() === '') return;
-    
-    const nombre = prompt('Ingresa el nombre completo:');
-    if (!nombre || nombre.trim() === '') return;
-    
-    const roles = ['admin', 'empleado', 'tecnico'];
-    let rol = prompt(`Selecciona el rol:\n${roles.map((r, i) => `${i+1}. ${r}`).join('\n')}`);
-    
-    if (!rol || !roles.includes(rol)) {
-        if (rol === '1') rol = 'admin';
-        else if (rol === '2') rol = 'empleado';
-        else if (rol === '3') rol = 'tecnico';
-        else {
-            showAlert('Rol inválido', 'danger');
-            return;
-        }
+// ===== FUNCIONES DE USUARIOS =====
+function toggleUserForm() {
+    const form = document.getElementById('userFormContainer');
+    if (form.style.display === 'none') {
+        form.style.display = 'block';
+        document.getElementById('newUserForm').reset();
+    } else {
+        form.style.display = 'none';
     }
+}
+
+async function submitNewUser(event) {
+    event.preventDefault();
     
-    const contraseña = prompt('Ingresa la contraseña inicial:');
-    if (!contraseña || contraseña.trim() === '') return;
+    const usuario = document.getElementById('newUserUsuario').value.trim();
+    const nombre = document.getElementById('newUserNombre').value.trim();
+    const password = document.getElementById('newUserPassword').value;
+    const rol = document.getElementById('newUserRol').value;
+    
+    if (!usuario || !nombre || !password || !rol) {
+        showAlert('Todos los campos son obligatorios', 'danger');
+        return;
+    }
     
     try {
         const response = await apiCall('/admin/usuarios', {
             method: 'POST',
             body: JSON.stringify({
-                usuario: usuario.trim(),
-                nombre: nombre.trim(),
-                rol: rol,
-                contraseña: contraseña
+                usuario,
+                nombre,
+                rol,
+                contraseña: password
             })
         });
         
-        console.log('Respuesta de usuario:', response);
-        
         if (response && response.id) {
             showAlert(`Usuario "${usuario}" creado correctamente`, 'success');
+            toggleUserForm();
             loadPage('admin');
         } else if (response && response.error) {
             showAlert(response.error, 'danger');
         } else {
-            showAlert('Error desconocido al crear usuario', 'danger');
+            showAlert('Error al crear usuario', 'danger');
         }
     } catch (error) {
-        console.error('Error en showNewUserModal:', error);
+        console.error('Error al crear usuario:', error);
         showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+async function deleteUser(id, nombre) {
+    if (!confirm(`¿Eliminar el usuario "${nombre}"?`)) return;
+    
+    try {
+        const response = await apiCall(`/admin/usuarios/${id}`, {
+            method: 'DELETE'
+        });
+        
+        if (response && response.success) {
+            showAlert(`Usuario "${nombre}" eliminado`, 'success');
+            loadPage('admin');
+        } else {
+            showAlert(response?.error || 'Error al eliminar usuario', 'danger');
+        }
+    } catch (error) {
+        console.error('Error al eliminar usuario:', error);
+        showAlert('Error al conectar con el servidor', 'danger');
+    }
+}
+
+// ===== FUNCIONES DE MARCAS =====
+function toggleMarcaForm() {
+    const form = document.getElementById('marcaFormContainer');
+    if (form.style.display === 'none') {
+        form.style.display = 'block';
+        document.getElementById('newMarcaForm').reset();
+    } else {
+        form.style.display = 'none';
+    }
+}
+
+async function submitNewMarca(event) {
+    event.preventDefault();
+    
+    const nombre = document.getElementById('newMarcaNombre').value.trim();
+    
+    if (!nombre) {
+        showAlert('El nombre de la marca es obligatorio', 'danger');
+        return;
+    }
+    
+    try {
+        const response = await apiCall('/marcas', {
+            method: 'POST',
+            body: JSON.stringify({ nombre })
+        });
+        
+        if (response && response.id) {
+            showAlert(`Marca "${nombre}" agregada correctamente`, 'success');
+            toggleMarcaForm();
+            loadPage('admin');
+        } else if (response && response.error) {
+            showAlert(response.error, 'danger');
+        } else {
+            showAlert('Error al agregar marca', 'danger');
+        }
+    } catch (error) {
+        console.error('Error al agregar marca:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+async function deleteMarca(id, nombre) {
+    if (!confirm(`¿Eliminar la marca "${nombre}"?`)) return;
+    
+    try {
+        const response = await apiCall(`/marcas/${id}`, {
+            method: 'DELETE'
+        });
+        
+        if (response && response.success) {
+            showAlert(`Marca "${nombre}" eliminada`, 'success');
+            loadPage('admin');
+        } else {
+            showAlert(response?.error || 'Error al eliminar marca', 'danger');
+        }
+    } catch (error) {
+        console.error('Error al eliminar marca:', error);
+        showAlert('Error al conectar con el servidor', 'danger');
+    }
+}
+
+// ===== FUNCIONES DE FALLAS =====
+function toggleFallaForm() {
+    const form = document.getElementById('fallaFormContainer');
+    if (form.style.display === 'none') {
+        form.style.display = 'block';
+        document.getElementById('newFallaForm').reset();
+    } else {
+        form.style.display = 'none';
+    }
+}
+
+async function submitNewFalla(event) {
+    event.preventDefault();
+    
+    const nombre = document.getElementById('newFallaNombre').value.trim();
+    const precio = parseFloat(document.getElementById('newFallaPrecio').value);
+    const descripcion = document.getElementById('newFallaDescripcion').value.trim();
+    
+    if (!nombre || isNaN(precio)) {
+        showAlert('Nombre y precio son obligatorios', 'danger');
+        return;
+    }
+    
+    try {
+        const response = await apiCall('/fallas', {
+            method: 'POST',
+            body: JSON.stringify({
+                nombre,
+                precio_sugerido: precio,
+                descripcion
+            })
+        });
+        
+        if (response && response.id) {
+            showAlert(`Falla "${nombre}" agregada correctamente`, 'success');
+            toggleFallaForm();
+            loadPage('admin');
+        } else if (response && response.error) {
+            showAlert(response.error, 'danger');
+        } else {
+            showAlert('Error al agregar falla', 'danger');
+        }
+    } catch (error) {
+        console.error('Error al agregar falla:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+async function deleteFalla(id, nombre) {
+    if (!confirm(`¿Eliminar la falla "${nombre}"?`)) return;
+    
+    try {
+        const response = await apiCall(`/fallas/${id}`, {
+            method: 'DELETE'
+        });
+        
+        if (response && response.success) {
+            showAlert(`Falla "${nombre}" eliminada`, 'success');
+            loadPage('admin');
+        } else {
+            showAlert(response?.error || 'Error al eliminar falla', 'danger');
+        }
+    } catch (error) {
+        console.error('Error al eliminar falla:', error);
+        showAlert('Error al conectar con el servidor', 'danger');
     }
 }
 

@@ -91,9 +91,12 @@ function redirectByRole(rol) {
 
 // ===== FUNCIONES UTILITARIAS =====
 async function apiCall(endpoint, options = {}) {
+    // Asegurar que tenemos el token actualizado
+    const currentToken = localStorage.getItem('token');
+    
     const headers = {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
+        ...(currentToken ? { 'Authorization': `Bearer ${currentToken}` } : {})
     };
     
     const response = await fetch(`${API_BASE}${endpoint}`, {

@@ -191,7 +191,16 @@ lsof -i :8000
 (None specified yet)
 
 ## Recent Changes
-- **2025-11-15 (Latest)**: Fixed login and API connectivity issues
+- **2025-11-15 (v2)**: Complete UI/UX overhaul for admin panel
+  - **Replaced prompt()-based forms with inline collapsible forms**
+  - Forms now appear within the same interface (no pop-ups)
+  - Added proper validation and error feedback
+  - Improved user experience with clear save/cancel buttons
+  - Forms automatically hide after successful submission
+  - Fixed JWT token authentication in all API calls
+  - All CRUD operations (Users, Brands, Failures) now working correctly
+  
+- **2025-11-15 (v1)**: Fixed login and API connectivity issues
   - Added API proxy in frontend server to route requests to backend
   - Fixed password hashing in database initialization
   - Removed demo credentials display from login page
