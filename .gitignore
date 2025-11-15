@@ -1,0 +1,60 @@
+# Entorno virtual
+venv/
+ENV/
+env/
+
+# Archivos de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Archivos de la aplicación
+*.db
+*.sqlite
+*.sqlite3
+celupro.db
+
+# Archivos del IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Archivos de configuración local
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+
+# Cache
+.cache/
+*.cache
+
+# Archivos temporales
+temp/
+tmp/
+*.tmp
+
+# Archivos de compilación
+build/
+dist/
+*.egg-info/
+
+# Node (si se usa frontend externo)
+node_modules/
+npm-debug.log
+
+# Coverage
+htmlcov/
+.coverage
+.pytest_cache/
+
+# OS
+Thumbs.db
+.DS_Store
