@@ -126,9 +126,11 @@ Tables: users, brands, models, entries, failures, notes, configuration
 ### Replit-Specific Changes Made
 1. **Port Configuration**: Frontend moved to port 5000, backend to port 8000
 2. **Host Binding**: Frontend uses 0.0.0.0, backend uses 127.0.0.1
-3. **API Endpoint**: Updated frontend JS to connect to localhost:8000
-4. **Unified Startup**: Created main.py to launch both servers
-5. **Workflow**: Configured to run main.py with webview on port 5000
+3. **API Proxy**: Frontend server proxies all /api/* requests to backend at 127.0.0.1:8000
+4. **API Endpoint**: Frontend JS uses relative paths (/api) instead of absolute URLs
+5. **Unified Startup**: Created main.py to launch both servers
+6. **Workflow**: Configured to run main.py with webview on port 5000
+7. **Password Security**: Database initialization now uses hashed passwords
 
 ### Dependencies Installed
 All Python dependencies installed via uv:
@@ -189,6 +191,13 @@ lsof -i :8000
 (None specified yet)
 
 ## Recent Changes
+- **2025-11-15 (Latest)**: Fixed login and API connectivity issues
+  - Added API proxy in frontend server to route requests to backend
+  - Fixed password hashing in database initialization
+  - Removed demo credentials display from login page
+  - Updated JavaScript to use relative API paths instead of absolute URLs
+  - All API calls now go through frontend server proxy at port 5000
+  
 - **2025-11-15**: Initial Replit setup completed
   - Configured ports for Replit environment
   - Created unified startup script
