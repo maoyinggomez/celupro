@@ -1,6 +1,7 @@
 import sqlite3
 import os
 from datetime import datetime
+from werkzeug.security import generate_password_hash
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'celupro.db')
 
@@ -148,10 +149,11 @@ def insert_default_data(cursor, conn):
         return
     
     # Usuario administrador por defecto
+    hashed_password = generate_password_hash('admin123')
     cursor.execute('''
     INSERT INTO usuarios (usuario, contraseña, nombre, rol)
     VALUES (?, ?, ?, ?)
-    ''', ('admin', 'admin123', 'Administrador', 'admin'))
+    ''', ('admin', hashed_password, 'Administrador', 'admin'))
     
     # Marcas por defecto
     marcas_por_defecto = [
