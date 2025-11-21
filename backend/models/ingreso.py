@@ -173,6 +173,31 @@ class Ingreso:
         return True
     
     @staticmethod
+    def update(ingreso_id, datos):
+        """Actualiza un ingreso con múltiples campos"""
+        if not datos:
+            return True
+        
+        updates = []
+        params = []
+        
+        for key, value in datos.items():
+            if key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'falla_general']:
+                # Convertir a mayúsculas si es string
+                if isinstance(value, str):
+                    value = value.upper()
+                updates.append(f"{key} = ?")
+                params.append(value)
+        
+        if not updates:
+            return True
+        
+        params.append(ingreso_id)
+        query = f"UPDATE ingresos SET {', '.join(updates)} WHERE id = ?"
+        db.execute_update(query, params)
+        return True
+    
+    @staticmethod
     def update_estado(ingreso_id, estado):
         """Actualiza el estado del ingreso"""
         query = "UPDATE ingresos SET estado_ingreso = ? WHERE id = ?"

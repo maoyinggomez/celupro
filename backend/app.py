@@ -308,6 +308,30 @@ def delete_ingreso(ingreso_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
+@app.route('/api/ingresos/<int:ingreso_id>', methods=['PUT'])
+@role_required('admin', 'tecnico', 'empleado')
+def update_ingreso(ingreso_id):
+    """Actualiza un ingreso"""
+    data = request.get_json()
+    
+    try:
+        # Si se está actualizando el estado, usar el método específico
+        if 'estado_ingreso' in data:
+            Ingreso.update_estado(ingreso_id, data['estado_ingreso'])
+        
+        # Actualizar otros campos si es necesario
+        if 'cliente_nombre' in data or 'cliente_apellido' in data or 'color' in data:
+            updates = {}
+            for key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'falla_general']:
+                if key in data:
+                    updates[key] = data[key]
+            if updates:
+                Ingreso.update(ingreso_id, updates)
+        
+        return jsonify({'success': True, 'message': 'Ingreso actualizado'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
 @app.route('/api/ingresos', methods=['GET'])
 @jwt_required()
 def get_ingresos():

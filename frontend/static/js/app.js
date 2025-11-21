@@ -268,7 +268,21 @@ async function loadIngresoForm() {
             
             <div class="mb-3">
                 <label class="form-label">Color</label>
-                <input type="text" class="form-control" id="color">
+                <select class="form-control" id="color">
+                    <option value="">Seleccione un color</option>
+                    <option value="Negro">Negro</option>
+                    <option value="Blanco">Blanco</option>
+                    <option value="Plateado">Plateado</option>
+                    <option value="Dorado">Dorado</option>
+                    <option value="Rojo">Rojo</option>
+                    <option value="Azul">Azul</option>
+                    <option value="Verde">Verde</option>
+                    <option value="Púrpura">Púrpura</option>
+                    <option value="Rosa">Rosa</option>
+                    <option value="Naranja">Naranja</option>
+                    <option value="Gris">Gris</option>
+                    <option value="Otro">Otro</option>
+                </select>
             </div>
             
             <hr class="my-4">
@@ -590,26 +604,63 @@ async function loadRegistros() {
 }
 
 async function loadTecnicoPanel() {
-    const response = await apiCall('/ingresos/pendientes');
+    const response = await apiCall('/ingresos');
     
-    if (!Array.isArray(response)) {
+    if (!response || !response.data) {
         return '<div class="alert alert-danger">Error al cargar panel técnico</div>';
     }
     
+    const ingresos = response.data;
+    
     return `
-        <h2 class="mb-4">Panel Técnico</h2>
+        <h2 class="mb-4">Panel Técnico - Gestión de Reparaciones</h2>
         
-        <div class="row mb-4">
-            <div class="col-md-12">
-                <div class="alert alert-info">
-                    <i class="fas fa-info-circle"></i> Tienes 
-                    <strong>${response.length}</strong> ingresos pendientes
-                </div>
+        <ul class="nav nav-tabs mb-4" role="tablist">
+            <li class="nav-item">
+                <a class="nav-link active" data-bs-toggle="tab" href="#pendientes">
+                    <i class="fas fa-clock me-2"></i> Pendientes
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" data-bs-toggle="tab" href="#en-reparacion">
+                    <i class="fas fa-tools me-2"></i> En Reparación
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" data-bs-toggle="tab" href="#reparados">
+                    <i class="fas fa-check me-2"></i> Reparados
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" data-bs-toggle="tab" href="#entregados">
+                    <i class="fas fa-box me-2"></i> Entregados
+                </a>
+            </li>
+        </ul>
+        
+        <div class="tab-content">
+            <div id="pendientes" class="tab-pane fade show active">
+                ${renderIngresosPorEstado(ingresos, 'pendiente')}
+            </div>
+            <div id="en-reparacion" class="tab-pane fade">
+                ${renderIngresosPorEstado(ingresos, 'en_reparacion')}
+            </div>
+            <div id="reparados" class="tab-pane fade">
+                ${renderIngresosPorEstado(ingresos, 'reparado')}
+            </div>
+            <div id="entregados" class="tab-pane fade">
+                ${renderIngresosPorEstado(ingresos, 'entregado')}
             </div>
         </div>
-        
+    `;
+}
+
+function renderIngresosPorEstado(ingresos, estado) {
+    const filtrados = ingresos.filter(i => i.estado_ingreso === estado);
+    
+    return `
         <div class="row">
-            ${response.map(ingreso => `
+            ${filtrados.length > 0 ? filtrados.map(ingreso => `
                 <div class="col-md-6 mb-4">
                     <div class="card">
                         <div class="card-header bg-primary text-white">
@@ -617,17 +668,45 @@ async function loadTecnicoPanel() {
                         </div>
                         <div class="card-body">
                             <p><strong>Cliente:</strong> ${ingreso.cliente_nombre} ${ingreso.cliente_apellido}</p>
+                            <p><strong>Teléfono:</strong> ${ingreso.cliente_telefono || 'N/A'}</p>
                             <p><strong>Equipo:</strong> ${ingreso.marca} ${ingreso.modelo}</p>
-                            <p><strong>Fecha:</strong> ${new Date(ingreso.fecha_ingreso).toLocaleDateString()}</p>
-                            <button class="btn btn-primary w-100" onclick="verDetallesTecnico(${ingreso.id})">
-                                Ver Detalles
+                            <p><strong>Color:</strong> ${ingreso.color || 'N/A'}</p>
+                            <p><strong>Falla:</strong> ${ingreso.falla_general || 'N/A'}</p>
+                            <p><strong>Fecha Ingreso:</strong> ${new Date(ingreso.fecha_ingreso).toLocaleDateString()}</p>
+                            <div class="mt-3">
+                                <label class="form-label">Cambiar Estado:</label>
+                                <select class="form-select form-select-sm" onchange="cambiarEstadoIngreso(${ingreso.id}, this.value)">
+                                    <option value="${ingreso.estado_ingreso}" selected>-- Seleccione --</option>
+                                    <option value="pendiente">Pendiente</option>
+                                    <option value="en_reparacion">En Reparación</option>
+                                    <option value="reparado">Reparado</option>
+                                    <option value="entregado">Entregado</option>
+                                    <option value="cancelado">Cancelado</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-sm btn-info w-100 mt-2" onclick="verDetallesTecnico(${ingreso.id})">
+                                Ver Detalles Completos
                             </button>
                         </div>
                     </div>
                 </div>
-            `).join('')}
+            `).join('') : '<div class="col-12"><div class="alert alert-info">No hay ingresos en este estado</div></div>'}
         </div>
     `;
+}
+
+async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
+    if (!nuevoEstado || nuevoEstado === '-- Seleccione --') return;
+    
+    const data = { estado_ingreso: nuevoEstado };
+    const response = await apiCall(`/ingresos/${ingresoId}`, 'PUT', data);
+    
+    if (response && response.success) {
+        alert('Estado actualizado correctamente');
+        loadPage('tecnico'); // Recargar el panel
+    } else {
+        alert('Error al actualizar el estado');
+    }
 }
 
 async function loadAdminPanel() {
@@ -638,6 +717,11 @@ async function loadAdminPanel() {
             <li class="nav-item">
                 <a class="nav-link active" data-bs-toggle="tab" href="#usuarios">
                     <i class="fas fa-users me-2"></i> Usuarios
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" data-bs-toggle="tab" href="#clientes">
+                    <i class="fas fa-address-book me-2"></i> Base de Clientes
                 </a>
             </li>
             <li class="nav-item">
@@ -660,6 +744,9 @@ async function loadAdminPanel() {
         <div class="tab-content">
             <div id="usuarios" class="tab-pane fade show active">
                 ${await loadAdminUsuarios()}
+            </div>
+            <div id="clientes" class="tab-pane fade">
+                ${await loadAdminClientes()}
             </div>
             <div id="marcas" class="tab-pane fade">
                 ${await loadAdminMarcas()}
@@ -751,6 +838,97 @@ async function loadAdminUsuarios() {
                 </table>
             </div>
         </div>
+    `;
+}
+
+async function loadAdminClientes() {
+    const ingresos = await apiCall('/ingresos');
+    
+    // Extraer clientes únicos
+    const clientesMap = new Map();
+    if (ingresos && ingresos.data) {
+        ingresos.data.forEach(ingreso => {
+            const key = ingreso.cliente_cedula;
+            if (!clientesMap.has(key)) {
+                clientesMap.set(key, {
+                    nombre: ingreso.cliente_nombre,
+                    apellido: ingreso.cliente_apellido,
+                    cedula: ingreso.cliente_cedula,
+                    telefono: ingreso.cliente_telefono || 'N/A',
+                    direccion: ingreso.cliente_direccion || 'N/A',
+                    ingresos: 1
+                });
+            } else {
+                const cliente = clientesMap.get(key);
+                cliente.ingresos++;
+            }
+        });
+    }
+    
+    const clientes = Array.from(clientesMap.values());
+    
+    return `
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Base de Datos de Clientes</h5>
+            </div>
+            <div class="card-body">
+                <div class="row mb-3">
+                    <div class="col-md-8">
+                        <input type="text" class="form-control" id="buscarCliente" placeholder="Buscar por nombre, cédula o teléfono...">
+                    </div>
+                </div>
+                
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover" id="tablaclienta">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Nombre</th>
+                                <th>Cédula</th>
+                                <th>Teléfono</th>
+                                <th>Dirección</th>
+                                <th>Ingresos</th>
+                                <th>Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="clientesList">
+                            ${clientes.length > 0 ? clientes.map(cliente => `
+                                <tr class="cliente-row" data-filter="${(cliente.nombre + ' ' + cliente.apellido + ' ' + cliente.cedula + ' ' + cliente.telefono).toLowerCase()}">
+                                    <td><strong>${cliente.nombre} ${cliente.apellido}</strong></td>
+                                    <td>${cliente.cedula}</td>
+                                    <td>${cliente.telefono}</td>
+                                    <td>${cliente.direccion}</td>
+                                    <td><span class="badge bg-info">${cliente.ingresos}</span></td>
+                                    <td>
+                                        <button class="btn btn-sm btn-warning" onclick="editarCliente('${cliente.cedula}')">
+                                            <i class="fas fa-edit"></i>
+                                        </button>
+                                        <button class="btn btn-sm btn-info" onclick="verClienteIngresos('${cliente.cedula}')">
+                                            <i class="fas fa-history"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                            `).join('') : '<tr><td colspan="6" class="text-center">No hay clientes registrados</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            // Buscador de clientes
+            const buscarInput = document.getElementById('buscarCliente');
+            if (buscarInput) {
+                buscarInput.addEventListener('keyup', function() {
+                    const filtro = this.value.toLowerCase();
+                    const filas = document.querySelectorAll('.cliente-row');
+                    filas.forEach(fila => {
+                        const texto = fila.getAttribute('data-filter');
+                        fila.style.display = texto.includes(filtro) ? '' : 'none';
+                    });
+                });
+            }
+        </script>
     `;
 }
 
