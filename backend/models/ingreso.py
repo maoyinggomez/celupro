@@ -23,6 +23,7 @@ class Ingreso:
         cliente_nombre = datos['cliente_nombre'].upper()
         cliente_apellido = datos['cliente_apellido'].upper()
         cliente_cedula = datos['cliente_cedula'].upper()
+        cliente_telefono = datos.get('cliente_telefono', '').upper()
         cliente_direccion = datos.get('cliente_direccion', '').upper()
         color = datos.get('color', '').upper()
         falla_general = datos.get('falla_general', '').upper()
@@ -46,7 +47,7 @@ class Ingreso:
             cliente_nombre,
             cliente_apellido,
             cliente_cedula,
-            datos.get('cliente_telefono', ''),
+            cliente_telefono,
             cliente_direccion,
             color,
             falla_general,
@@ -89,6 +90,7 @@ class Ingreso:
         SELECT 
             i.id, i.numero_ingreso, i.fecha_ingreso, i.fecha_entrega,
             i.cliente_nombre, i.cliente_apellido, i.cliente_cedula,
+            i.cliente_telefono, i.cliente_direccion,
             m.nombre as marca,
             md.nombre as modelo,
             i.color,

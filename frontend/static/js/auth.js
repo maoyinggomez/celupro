@@ -4,7 +4,7 @@ let currentUser = null;
 let token = null;
 
 // ===== MANEJO DE AUTENTICACIÓN =====
-document.addEventListener('DOMContentLoaded', () => {
+function initAuth() {
     const loginForm = document.getElementById('loginForm');
     if (loginForm) {
         loginForm.addEventListener('submit', handleLogin);
@@ -17,7 +17,14 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Verificar si ya hay sesión
     checkSession();
-});
+}
+
+// Ejecutar cuando el DOM esté listo
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAuth);
+} else {
+    initAuth();
+}
 
 function handleLogin(e) {
     e.preventDefault();
@@ -113,11 +120,53 @@ async function apiCall(endpoint, options = {}) {
 }
 
 function showLoading(show = true) {
-    const modal = bootstrap.Modal.getInstance(document.getElementById('loadingModal'));
-    if (show) {
-        new bootstrap.Modal(document.getElementById('loadingModal')).show();
-    } else if (modal) {
-        modal.hide();
+    const loadingModal = document.getElementById('loadingModal');
+    if (!loadingModal) {
+        console.warn('Loading modal no encontrado');
+        return;
+    }
+    
+    try {
+        // Cerrar cualquier modal existente primero
+        const existingModal = bootstrap.Modal.getInstance(loadingModal);
+        if (existingModal) {
+            existingModal.dispose();
+        }
+        
+        if (show) {
+            // Mostrar el modal
+            loadingModal.classList.add('show');
+            loadingModal.style.display = 'block';
+            loadingModal.style.zIndex = '10000';
+            
+            // Crear backdrop
+            let backdrop = document.querySelector('.modal-backdrop');
+            if (!backdrop) {
+                backdrop = document.createElement('div');
+                backdrop.className = 'modal-backdrop fade show';
+                backdrop.style.zIndex = '9999';
+                document.body.appendChild(backdrop);
+            }
+            document.body.classList.add('modal-open');
+        } else {
+            // Cerrar el modal
+            loadingModal.classList.remove('show');
+            loadingModal.style.display = 'none';
+            
+            // Remover backdrop
+            const backdrop = document.querySelector('.modal-backdrop');
+            if (backdrop) {
+                backdrop.remove();
+            }
+            document.body.classList.remove('modal-open');
+        }
+    } catch (error) {
+        console.error('Error en showLoading:', error);
+        // Fallback simple
+        const loadingModal = document.getElementById('loadingModal');
+        if (loadingModal) {
+            loadingModal.style.display = show ? 'block' : 'none';
+        }
     }
 }
 

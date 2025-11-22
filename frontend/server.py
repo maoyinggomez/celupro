@@ -4,10 +4,16 @@ Servidor para servir archivos estáticos del frontend con proxy a backend
 from flask import Flask, render_template, send_from_directory, request, jsonify
 import requests
 import os
+import time
 
 app = Flask(__name__)
 
 BACKEND_URL = 'http://127.0.0.1:5000'
+
+# Agregar timestamp a cada request para evitar caché
+@app.context_processor
+def inject_cache_buster():
+    return {'cache_buster': int(time.time() * 1000)}
 
 # Manejador global de errores
 @app.errorhandler(Exception)

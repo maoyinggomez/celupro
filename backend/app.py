@@ -26,7 +26,7 @@ app = Flask(__name__)
 
 # Configuración
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'celupro-secret-key-2024')
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=72)
 
 # Inicializar extensiones
 CORS(app)
@@ -46,7 +46,7 @@ def role_required(*roles):
         @wraps(fn)
         @jwt_required()
         def wrapper(*args, **kwargs):
-            current_user_id = get_jwt_identity()
+            current_user_id = int(get_jwt_identity())  # Convertir a int porque lo guardamos como string
             user = User.get_by_id(current_user_id)
             
             if not user or user['rol'] not in roles:
@@ -70,7 +70,7 @@ def login():
     if not user:
         return jsonify({'error': 'Credenciales inválidas'}), 401
     
-    access_token = create_access_token(identity=user['id'])
+    access_token = create_access_token(identity=str(user['id']))
     
     return jsonify({
         'access_token': access_token,
@@ -86,7 +86,7 @@ def login():
 @jwt_required()
 def get_current_user():
     """Obtiene datos del usuario actual"""
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     user = User.get_by_id(current_user_id)
     
     return jsonify(user), 200
@@ -112,7 +112,7 @@ def create_marca():
     """Crea una nueva marca"""
     data = request.get_json()
     
-    if not data.get('nombre'):
+    if not data or not data.get('nombre'):
         return jsonify({'error': 'Nombre requerido'}), 400
     
     try:
@@ -246,7 +246,7 @@ def delete_falla(falla_id):
 def create_ingreso():
     """Crea un nuevo ingreso técnico"""
     data = request.get_json()
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     
     # Validaciones básicas
     required_fields = ['marca_id', 'modelo_id', 'cliente_nombre', 'cliente_apellido', 'cliente_cedula']
@@ -407,7 +407,7 @@ def update_ingreso_estado(ingreso_id):
 def add_falla_to_ingreso(ingreso_id):
     """Agrega una falla a un ingreso"""
     data = request.get_json()
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     
     if not data.get('falla_id'):
         return jsonify({'error': 'falla_id requerido'}), 400
@@ -481,7 +481,7 @@ def delete_ingreso_falla(ingreso_falla_id):
 def add_nota(ingreso_id):
     """Agrega una nota a un ingreso"""
     data = request.get_json()
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     
     if not data.get('contenido'):
         return jsonify({'error': 'contenido requerido'}), 400
@@ -630,5 +630,62 @@ def get_ticket_data(ingreso_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# ===== RUTAS DE BÚSQUEDA DE CLIENTES =====
+@app.route('/api/clientes/buscar', methods=['GET'])
+def buscar_clientes():
+    """Busca clientes por nombre, cédula o teléfono"""
+    try:
+        query_param = request.args.get('q', '').upper().strip()
+        print(f"DEBUG: Buscando: {query_param}")
+        
+        if not query_param or len(query_param) < 2:
+            return jsonify({'data': []}), 200
+        
+        query = '''
+        SELECT DISTINCT
+            cliente_nombre, 
+            cliente_apellido, 
+            cliente_cedula,
+            cliente_telefono,
+            cliente_direccion
+        FROM ingresos
+        WHERE 
+            UPPER(cliente_nombre) LIKE ? OR
+            UPPER(cliente_apellido) LIKE ? OR
+            UPPER(cliente_cedula) LIKE ? OR
+            UPPER(cliente_telefono) LIKE ?
+        ORDER BY cliente_nombre, cliente_apellido
+        LIMIT 10
+        '''
+        
+        search_term = f"%{query_param}%"
+        print(f"DEBUG: Search term: {search_term}")
+        
+        from models.database import db as database
+        results = database.execute_query(query, (search_term, search_term, search_term, search_term))
+        print(f"DEBUG: Resultados encontrados: {len(results)}")
+        
+        clientes = []
+        for row in results:
+            print(f"DEBUG: Row: {dict(row)}")
+            clientes.append({
+                'nombre': row['cliente_nombre'],
+                'apellido': row['cliente_apellido'],
+                'cedula': row['cliente_cedula'],
+                'telefono': row['cliente_telefono'],
+                'direccion': row['cliente_direccion']
+            })
+        
+        print(f"DEBUG: Retornando {len(clientes)} clientes")
+        return jsonify({'data': clientes}), 200
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        trace = traceback.format_exc()
+        print(f"ERROR en buscar_clientes: {error_msg}")
+        print(f"TRACEBACK: {trace}")
+        return jsonify({'error': error_msg, 'trace': trace}), 500
+
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=False, host='0.0.0.0', port=5000)
+

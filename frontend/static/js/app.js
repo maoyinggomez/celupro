@@ -1,14 +1,25 @@
 // Aplicación principal
 let currentPage = null;
 
-document.addEventListener('DOMContentLoaded', () => {
-    checkSession();
+function initApp() {
+    console.log('initApp() called');
+    console.log('currentUser:', currentUser);
     
     if (currentUser) {
+        console.log('User logged in, building menu and loading dashboard');
         buildMenu();
         loadPage('dashboard');
+    } else {
+        console.log('No user found');
     }
-});
+}
+
+// Ejecutar cuando el DOM esté listo
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initApp);
+} else {
+    initApp();
+}
 
 function buildMenu() {
     const menu = document.getElementById('menuNav');
@@ -48,22 +59,37 @@ async function loadPage(page) {
     currentPage = page;
     const mainContent = document.getElementById('mainContent');
     
-    if (!mainContent) return;
+    if (!mainContent) {
+        console.error('mainContent element not found');
+        return;
+    }
     
     mainContent.innerHTML = '<div class="text-center"><div class="spinner-border" role="status"><span class="visually-hidden">Cargando...</span></div></div>';
     
     let content = '';
     
     try {
+        console.log(`Loading page: ${page}`);
+        
         switch (page) {
             case 'dashboard':
                 content = await loadDashboard();
                 break;
             case 'ingreso':
                 content = await loadIngresoForm();
+                // Luego de renderizar, agregamos los event listeners
+                setTimeout(() => {
+                    const buscarInput = document.getElementById('buscar_cliente');
+                    if (buscarInput) {
+                        buscarInput.addEventListener('keyup', buscarClientes);
+                        buscarInput.addEventListener('input', buscarClientes);
+                    }
+                }, 100);
                 break;
             case 'registros':
+                console.log('Calling loadRegistros...');
                 content = await loadRegistros();
+                console.log('loadRegistros returned, content length:', content.length);
                 break;
             case 'tecnico':
                 if (currentUser.rol !== 'tecnico' && currentUser.rol !== 'admin') {
@@ -83,34 +109,47 @@ async function loadPage(page) {
                 content = '<div class="alert alert-info">Página no encontrada</div>';
         }
     } catch (error) {
-        content = `<div class="alert alert-danger">Error al cargar la página: ${error.message}</div>`;
+        console.error('Error loading page:', page, error);
+        content = `<div class="alert alert-danger">Error al cargar la página: ${error.message}<br><pre>${error.stack}</pre></div>`;
     }
     
+    console.log(`Setting mainContent for page: ${page}`);
     mainContent.innerHTML = content;
     
     // Agregar listeners después de cargar el contenido
-    if (page === 'ingreso') {
-        const form = document.getElementById('ingresoForm');
-        if (form) {
-            form.addEventListener('submit', submitIngreso);
+    try {
+        if (page === 'ingreso') {
+            const form = document.getElementById('ingresoForm');
+            if (form) {
+                form.addEventListener('submit', submitIngreso);
+            }
+            
+            // Agregar listener al campo de búsqueda de clientes
+            const buscarClienteInput = document.getElementById('buscar_cliente');
+            if (buscarClienteInput) {
+                buscarClienteInput.addEventListener('keyup', buscarClientes);
+                buscarClienteInput.addEventListener('input', buscarClientes);
+            }
+            
+            // Agregar listener al checkbox de clave
+            const tieneClaveCheckbox = document.getElementById('tiene_clave');
+            if (tieneClaveCheckbox) {
+                tieneClaveCheckbox.addEventListener('change', function() {
+                    const div = document.getElementById('claveDiv');
+                    if (div) {
+                        div.style.display = this.checked ? 'block' : 'none';
+                    }
+                });
+            }
+            
+            // Agregar listener al cambio de marca
+            const marcaSelect = document.getElementById('marca_id');
+            if (marcaSelect) {
+                marcaSelect.addEventListener('change', loadModelosByMarca);
+            }
         }
-        
-        // Agregar listener al checkbox de clave
-        const tieneClaveCheckbox = document.getElementById('tiene_clave');
-        if (tieneClaveCheckbox) {
-            tieneClaveCheckbox.addEventListener('change', function() {
-                const div = document.getElementById('claveDiv');
-                if (div) {
-                    div.style.display = this.checked ? 'block' : 'none';
-                }
-            });
-        }
-        
-        // Agregar listener al cambio de marca
-        const marcaSelect = document.getElementById('marca_id');
-        if (marcaSelect) {
-            marcaSelect.addEventListener('change', loadModelosByMarca);
-        }
+    } catch (error) {
+        console.error('Error adding event listeners:', error);
     }
 }
 
@@ -215,6 +254,15 @@ async function loadIngresoForm() {
     
     return `
         <h2 class="mb-4">Nuevo Ingreso Técnico</h2>
+        
+        <div class="card p-4 mb-4 bg-light">
+            <h5 class="mb-3">Buscar Cliente Existente</h5>
+            <div class="mb-3">
+                <input type="text" class="form-control" id="buscar_cliente" placeholder="Buscar por nombre, cédula o teléfono...">
+                <div id="resultadosBusqueda" class="list-group mt-2" style="display: none; max-height: 300px; overflow-y: auto;"></div>
+            </div>
+            <small class="text-muted">O ingrese los datos manualmente a continuación</small>
+        </div>
         
         <form id="ingresoForm" class="card p-4">
             <div class="row">
@@ -381,6 +429,64 @@ async function loadIngresoForm() {
     `;
 }
 
+async function buscarClientes() {
+    const buscarInput = document.getElementById('buscar_cliente');
+    const resultados = document.getElementById('resultadosBusqueda');
+    
+    // Verificar que los elementos existan
+    if (!buscarInput || !resultados) {
+        console.log('Elementos de búsqueda no encontrados');
+        return;
+    }
+    
+    const query = buscarInput.value.trim();
+    
+    if (query.length < 2) {
+        resultados.style.display = 'none';
+        return;
+    }
+    
+    try {
+        console.log('Buscando clientes con query:', query);
+        const response = await apiCall(`/clientes/buscar?q=${encodeURIComponent(query)}`);
+        
+        console.log('Respuesta de búsqueda:', response);
+        
+        if (!response.data || response.data.length === 0) {
+            resultados.innerHTML = '<div class="list-group-item text-muted">No se encontraron clientes</div>';
+            resultados.style.display = 'block';
+            return;
+        }
+        
+        resultados.innerHTML = response.data.map(cliente => `
+            <button type="button" class="list-group-item list-group-item-action" 
+                    onclick="seleccionarCliente('${cliente.nombre}', '${cliente.apellido}', '${cliente.cedula}', '${cliente.telefono || ''}', '${cliente.direccion || ''}')">
+                <div class="d-flex w-100 justify-content-between">
+                    <strong>${cliente.nombre} ${cliente.apellido}</strong>
+                </div>
+                <small>Cédula: ${cliente.cedula} | Tel: ${cliente.telefono || 'N/A'}</small>
+            </button>
+        `).join('');
+        resultados.style.display = 'block';
+    } catch (error) {
+        console.error('Error buscando clientes:', error);
+        resultados.innerHTML = '<div class="list-group-item text-danger">Error en la búsqueda</div>';
+        resultados.style.display = 'block';
+    }
+}
+
+function seleccionarCliente(nombre, apellido, cedula, telefono, direccion) {
+    document.getElementById('cliente_nombre').value = nombre;
+    document.getElementById('cliente_apellido').value = apellido;
+    document.getElementById('cliente_cedula').value = cedula;
+    document.getElementById('cliente_telefono').value = telefono;
+    document.getElementById('cliente_direccion').value = direccion;
+    
+    // Limpiar búsqueda
+    document.getElementById('buscar_cliente').value = '';
+    document.getElementById('resultadosBusqueda').style.display = 'none';
+}
+
 async function loadModelosByMarca() {
     const marcaId = document.getElementById('marca_id').value;
     console.log('DEBUG loadModelosByMarca: marcaId=', marcaId);
@@ -410,6 +516,7 @@ async function loadModelosByMarca() {
 
 async function submitIngreso(e) {
     e.preventDefault();
+    console.log('DEBUG: submitIngreso iniciado');
     
     const fallasSeleccionadas = Array.from(document.querySelectorAll('.falla-checkbox:checked'))
         .map(cb => parseInt(cb.value));
@@ -418,25 +525,17 @@ async function submitIngreso(e) {
     const marcaValue = document.getElementById('marca_id').value;
     const modeloValue = document.getElementById('modelo_id').value;
     
-    console.log('DEBUG submitIngreso:');
-    console.log('  marca_id elemento:', document.getElementById('marca_id'));
-    console.log('  marca_id.value:', marcaValue);
-    console.log('  modelo_id elemento:', document.getElementById('modelo_id'));
-    console.log('  modelo_id.value:', modeloValue);
-    console.log('  marca_id options:', Array.from(document.getElementById('marca_id').options).map(o => `${o.value}:${o.text}`));
-    console.log('  modelo_id options:', Array.from(document.getElementById('modelo_id').options).map(o => `${o.value}:${o.text}`));
-    
     const datos = {
         marca_id: parseInt(marcaValue),
         modelo_id: parseInt(modeloValue),
-        cliente_nombre: document.getElementById('cliente_nombre').value,
-        cliente_apellido: document.getElementById('cliente_apellido').value,
-        cliente_cedula: document.getElementById('cliente_cedula').value,
-        cliente_telefono: document.getElementById('cliente_telefono').value,
-        cliente_direccion: document.getElementById('cliente_direccion').value,
-        color: document.getElementById('color').value,
-        falla_general: document.getElementById('falla_general').value,
-        notas_adicionales: document.getElementById('notas_adicionales').value,
+        cliente_nombre: document.getElementById('cliente_nombre').value.toUpperCase(),
+        cliente_apellido: document.getElementById('cliente_apellido').value.toUpperCase(),
+        cliente_cedula: document.getElementById('cliente_cedula').value.toUpperCase(),
+        cliente_telefono: document.getElementById('cliente_telefono').value.toUpperCase(),
+        cliente_direccion: document.getElementById('cliente_direccion').value.toUpperCase(),
+        color: document.getElementById('color').value.toUpperCase(),
+        falla_general: document.getElementById('falla_general').value.toUpperCase(),
+        notas_adicionales: document.getElementById('notas_adicionales').value.toUpperCase(),
         estado_display: document.getElementById('estado_display').checked,
         estado_tactil: document.getElementById('estado_tactil').checked,
         estado_botones: document.getElementById('estado_botones').checked,
@@ -446,8 +545,6 @@ async function submitIngreso(e) {
         fallas_iniciales: fallasSeleccionadas
     };
     
-    console.log('DEBUG: datos completos:', datos);
-    
     // Validar campos requeridos
     if (!datos.marca_id || !datos.modelo_id || !datos.cliente_nombre || 
         !datos.cliente_apellido || !datos.cliente_cedula) {
@@ -455,30 +552,52 @@ async function submitIngreso(e) {
         return;
     }
     
-    console.log('DEBUG: Validación pasada, enviando datos al servidor');
+    console.log('DEBUG: Validación pasada, mostrando loading...');
     showLoading(true);
     
-    const response = await apiCall('/ingresos', {
-        method: 'POST',
-        body: JSON.stringify(datos)
-    });
-    
-    console.log('DEBUG: Respuesta recibida:', response);
-    showLoading(false);
-    
-    if (response && response.numero_ingreso) {
-        showAlert(`¡Ingreso creado exitosamente! Número: ${response.numero_ingreso}`, 'success');
-        document.getElementById('ingresoForm').reset();
-        setTimeout(() => loadPage('registros'), 2000);
-    } else if (response && response.error) {
-        showAlert('Error: ' + response.error, 'danger');
-    } else if (response && response.id) {
-        showAlert(`¡Ingreso creado! Número: ${response.numero_ingreso || 'sin número'}`, 'success');
-        document.getElementById('ingresoForm').reset();
-        setTimeout(() => loadPage('registros'), 2000);
-    } else {
-        showAlert('Error desconocido al crear ingreso', 'danger');
-        console.error('Respuesta inesperada:', response);
+    try {
+        console.log('DEBUG: Enviando ingreso al servidor...');
+        const response = await apiCall('/ingresos', {
+            method: 'POST',
+            body: JSON.stringify(datos)
+        });
+        
+        console.log('DEBUG: Respuesta recibida, ocultando loading...', response);
+        showLoading(false);
+        console.log('DEBUG: Loading ocultado');
+        
+        if (!response) {
+            console.log('DEBUG: Response es null/undefined');
+            showAlert('Error de conexión con el servidor', 'danger');
+            return;
+        }
+        
+        if (response.error) {
+            console.log('DEBUG: Response tiene error:', response.error);
+            showAlert('Error: ' + response.error, 'danger');
+            return;
+        }
+        
+        if (response.numero_ingreso || response.id) {
+            const numeroIngreso = response.numero_ingreso || response.id;
+            console.log('DEBUG: Ingreso creado, número:', numeroIngreso);
+            showAlert(`¡Ingreso creado exitosamente! Número: ${numeroIngreso}`, 'success');
+            document.getElementById('ingresoForm').reset();
+            
+            // Esperar a que desaparezca la alerta y luego ir a registros
+            console.log('DEBUG: Esperando 1.5 segundos antes de cargar registros...');
+            setTimeout(() => {
+                console.log('DEBUG: Llamando a loadPage(registros)...');
+                loadPage('registros');
+            }, 1500);
+        } else {
+            console.log('DEBUG: Respuesta sin número de ingreso:', response);
+            showAlert('Error: Respuesta inesperada del servidor', 'danger');
+        }
+    } catch (error) {
+        console.error('DEBUG: Error en submitIngreso:', error);
+        showLoading(false);
+        showAlert('Error al crear ingreso: ' + error.message, 'danger');
     }
 }
 
@@ -544,6 +663,8 @@ async function loadRegistros() {
                         <tr>
                             <th>Ingreso</th>
                             <th>Cliente</th>
+                            <th>Teléfono</th>
+                            <th>Dirección</th>
                             <th>Fecha</th>
                             <th>Marca</th>
                             <th>Estado</th>
@@ -558,6 +679,8 @@ async function loadRegistros() {
                             <tr>
                                 <td><strong>${ingreso.numero_ingreso || 'N/A'}</strong></td>
                                 <td>${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}</td>
+                                <td>${ingreso.cliente_telefono || 'N/A'}</td>
+                                <td>${ingreso.cliente_direccion || 'N/A'}</td>
                                 <td>${ingreso.fecha_ingreso ? new Date(ingreso.fecha_ingreso).toLocaleDateString() : 'N/A'}</td>
                                 <td>${ingreso.marca || 'N/A'}</td>
                                 <td>
@@ -699,7 +822,10 @@ async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
     if (!nuevoEstado || nuevoEstado === '-- Seleccione --') return;
     
     const data = { estado_ingreso: nuevoEstado };
-    const response = await apiCall(`/ingresos/${ingresoId}`, 'PUT', data);
+    const response = await apiCall(`/ingresos/${ingresoId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data)
+    });
     
     if (response && response.success) {
         alert('Estado actualizado correctamente');
