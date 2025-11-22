@@ -3,20 +3,29 @@ const API_BASE = '/api';
 let currentUser = null;
 let token = null;
 
+console.log('auth.js cargado correctamente');
+
 // ===== MANEJO DE AUTENTICACIÓN =====
 function initAuth() {
+    console.log('initAuth() ejecutándose');
     const loginForm = document.getElementById('loginForm');
     if (loginForm) {
+        console.log('loginForm encontrado, agregando event listener');
         loginForm.addEventListener('submit', handleLogin);
+    } else {
+        console.log('loginForm NO encontrado - probablemente en dashboard');
     }
     
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) {
+        console.log('logoutBtn encontrado, agregando event listener');
         logoutBtn.addEventListener('click', handleLogout);
     }
     
     // Verificar si ya hay sesión
+    console.log('Llamando checkSession()...');
     checkSession();
+    console.log('checkSession() completado');
 }
 
 // Ejecutar cuando el DOM esté listo

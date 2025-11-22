@@ -6,17 +6,19 @@ class Ingreso:
     
     @staticmethod
     def generate_numero_ingreso():
-        """Genera un número de ingreso único"""
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        query = "SELECT COUNT(*) as count FROM ingresos WHERE strftime('%Y-%m-%d', fecha_ingreso) = date('now')"
+        """Genera un número de ingreso secuencial (1, 2, 3, ...)"""
+        # Contar total de ingresos existentes
+        query = "SELECT COUNT(*) as count FROM ingresos"
         result = db.execute_single(query)
         count = result['count'] + 1 if result else 1
-        return f"IG-{datetime.now().strftime('%Y%m%d')}-{count:04d}"
+        
+        # Retornar solo el número secuencial
+        return str(count)
     
     @staticmethod
     def create(datos):
         """Crea un nuevo ingreso técnico"""
+        # Generar número de ingreso único
         numero_ingreso = Ingreso.generate_numero_ingreso()
         
         # Convertir campos de texto a mayúsculas
@@ -61,6 +63,7 @@ class Ingreso:
         )
         
         ingreso_id = db.execute_update(query, params)
+        
         return {'id': ingreso_id, 'numero_ingreso': numero_ingreso}
     
     @staticmethod
@@ -202,8 +205,14 @@ class Ingreso:
     @staticmethod
     def update_estado(ingreso_id, estado):
         """Actualiza el estado del ingreso"""
-        query = "UPDATE ingresos SET estado_ingreso = ? WHERE id = ?"
-        db.execute_update(query, (estado, ingreso_id))
+        from datetime import datetime
+        # Si el estado es 'entregado', guardar la fecha de entrega
+        if estado == 'entregado':
+            query = "UPDATE ingresos SET estado_ingreso = ?, fecha_entrega = ? WHERE id = ?"
+            db.execute_update(query, (estado, datetime.now(), ingreso_id))
+        else:
+            query = "UPDATE ingresos SET estado_ingreso = ? WHERE id = ?"
+            db.execute_update(query, (estado, ingreso_id))
         return True
     
     @staticmethod

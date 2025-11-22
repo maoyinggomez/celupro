@@ -309,7 +309,7 @@ def delete_ingreso(ingreso_id):
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/ingresos/<int:ingreso_id>', methods=['PUT'])
-@role_required('admin', 'tecnico', 'empleado')
+@role_required('admin', 'tecnico')
 def update_ingreso(ingreso_id):
     """Actualiza un ingreso"""
     data = request.get_json()

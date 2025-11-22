@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS ingresos (
     tiene_clave BOOLEAN,
     clave TEXT,
     valor_total REAL DEFAULT 0,
-    estado_ingreso TEXT DEFAULT 'pendiente' CHECK(estado_ingreso IN ('pendiente', 'en_reparacion', 'reparado', 'entregado', 'cancelado')),
+    estado_ingreso TEXT DEFAULT 'pendiente' CHECK(estado_ingreso IN ('pendiente', 'en_reparacion', 'reparado', 'no_reparable', 'entregado', 'cancelado')),
     fecha_ingreso TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     fecha_entrega TIMESTAMP,
     FOREIGN KEY (empleado_id) REFERENCES usuarios(id),

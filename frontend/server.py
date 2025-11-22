@@ -5,8 +5,19 @@ from flask import Flask, render_template, send_from_directory, request, jsonify
 import requests
 import os
 import time
+import sys
+from pathlib import Path
 
-app = Flask(__name__)
+# Asegurar que Flask encuentra los templates
+TEMPLATE_DIR = str(Path(__file__).parent / 'templates')
+STATIC_DIR = str(Path(__file__).parent / 'static')
+
+print(f"DEBUG: TEMPLATE_DIR = {TEMPLATE_DIR}")
+print(f"DEBUG: STATIC_DIR = {STATIC_DIR}")
+print(f"DEBUG: Templates exist: {os.path.exists(TEMPLATE_DIR)}")
+print(f"DEBUG: Static exists: {os.path.exists(STATIC_DIR)}")
+
+app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 
 BACKEND_URL = 'http://127.0.0.1:5000'
 

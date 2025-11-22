@@ -10,7 +10,8 @@ function initApp() {
         buildMenu();
         loadPage('dashboard');
     } else {
-        console.log('No user found');
+        console.log('No user found, redirecting to login');
+        window.location.href = '/';
     }
 }
 
@@ -772,7 +773,7 @@ async function loadTecnicoPanel() {
                 ${renderIngresosPorEstado(ingresos, 'reparado')}
             </div>
             <div id="entregados" class="tab-pane fade">
-                ${renderIngresosPorEstado(ingresos, 'entregado')}
+                ${renderIngresosEntregadosEnLista(ingresos)}
             </div>
         </div>
     `;
@@ -791,11 +792,15 @@ function renderIngresosPorEstado(ingresos, estado) {
                         </div>
                         <div class="card-body">
                             <p><strong>Cliente:</strong> ${ingreso.cliente_nombre} ${ingreso.cliente_apellido}</p>
+                            <p><strong>Identificación:</strong> ${ingreso.cliente_cedula || 'N/A'}</p>
                             <p><strong>Teléfono:</strong> ${ingreso.cliente_telefono || 'N/A'}</p>
+                            <p><strong>Clave de Ingreso:</strong> <span class="badge bg-secondary">${ingreso.numero_ingreso || 'S/N'}</span></p>
                             <p><strong>Equipo:</strong> ${ingreso.marca} ${ingreso.modelo}</p>
                             <p><strong>Color:</strong> ${ingreso.color || 'N/A'}</p>
-                            <p><strong>Falla:</strong> ${ingreso.falla_general || 'N/A'}</p>
-                            <p><strong>Fecha Ingreso:</strong> ${new Date(ingreso.fecha_ingreso).toLocaleDateString()}</p>
+                            <p><strong>Reparación:</strong> ${ingreso.falla_general || 'N/A'}</p>
+                            <p><strong>Estado:</strong> <span class="badge bg-info">${ingreso.estado_ingreso}</span></p>
+                            <p><strong>Fecha y Hora de Ingreso:</strong> ${(() => { const d = new Date(ingreso.fecha_ingreso); const hh = String(d.getHours()).padStart(2, '0'); const mm = String(d.getMinutes()).padStart(2, '0'); return d.toLocaleDateString('es-ES') + ' ' + hh + ':' + mm; })()}</p>
+                            ${ingreso.notas ? `<p><strong>Notas:</strong> ${ingreso.notas}</p>` : ''}
                             <div class="mt-3">
                                 <label class="form-label">Cambiar Estado:</label>
                                 <select class="form-select form-select-sm" onchange="cambiarEstadoIngreso(${ingreso.id}, this.value)">
@@ -803,6 +808,7 @@ function renderIngresosPorEstado(ingresos, estado) {
                                     <option value="pendiente">Pendiente</option>
                                     <option value="en_reparacion">En Reparación</option>
                                     <option value="reparado">Reparado</option>
+                                    <option value="no_reparable">No Reparable</option>
                                     <option value="entregado">Entregado</option>
                                     <option value="cancelado">Cancelado</option>
                                 </select>
@@ -818,9 +824,132 @@ function renderIngresosPorEstado(ingresos, estado) {
     `;
 }
 
+function renderIngresosEntregadosEnLista(ingresos) {
+    const entregados = ingresos.filter(i => i.estado_ingreso === 'entregado');
+    
+    const html = `
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-3">Ingresos Entregados</h5>
+                <input type="text" class="form-control" id="buscarEntregados" placeholder="Buscar por nombre, teléfono, cédula o número de ingreso...">
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0" id="tablaEntregados">
+                        <thead class="table-light">
+                            <tr>
+                                <th width="70">ID</th>
+                                <th>Nombre</th>
+                                <th width="110">Cédula</th>
+                                <th width="110">Teléfono</th>
+                                <th>Celular Reparado</th>
+                                <th>Reparación</th>
+                                <th width="90">Fecha</th>
+                                <th width="80">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="listEntregados">
+                            ${entregados.length > 0 ? entregados.map(ing => `
+                                <tr class="fila-entregado" data-filter="${(ing.cliente_nombre + ' ' + ing.cliente_apellido + ' ' + ing.cliente_cedula + ' ' + ing.cliente_telefono + ' ' + ing.numero_ingreso).toLowerCase()}">
+                                    <td><strong>${ing.numero_ingreso || 'S/N'}</strong></td>
+                                    <td>${ing.cliente_nombre} ${ing.cliente_apellido}</td>
+                                    <td><small>${ing.cliente_cedula || 'N/A'}</small></td>
+                                    <td><small>${ing.cliente_telefono || 'N/A'}</small></td>
+                                    <td><small>${ing.marca} ${ing.modelo} - ${ing.color || 'N/A'}</small></td>
+                                    <td><small>${ing.falla_general || 'N/A'}</small></td>
+                                    <td><small>${new Date(ing.fecha_ingreso).toLocaleDateString('es-ES')}</small></td>
+                                    <td>
+                                        <button class="btn btn-sm btn-info" onclick="verDetallesTecnico(${ing.id})" title="Ver todos los detalles">
+                                            <i class="fas fa-eye"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                            `).join('') : '<tr><td colspan="8" class="text-center text-muted py-4">No hay ingresos entregados</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Usar setTimeout para ejecutar el script después de que el HTML sea renderizado
+    setTimeout(() => {
+        const buscarEntregadosInput = document.getElementById('buscarEntregados');
+        if (buscarEntregadosInput) {
+            buscarEntregadosInput.addEventListener('keyup', function() {
+                const filtro = this.value.toLowerCase();
+                const filas = document.querySelectorAll('.fila-entregado');
+                let visibles = 0;
+                filas.forEach(fila => {
+                    const texto = fila.getAttribute('data-filter');
+                    const mostrar = texto.includes(filtro);
+                    fila.style.display = mostrar ? '' : 'none';
+                    if (mostrar) visibles++;
+                });
+                // Si no hay resultados, mostrar mensaje
+                if (visibles === 0 && filtro.length > 0) {
+                    const tbody = document.getElementById('listEntregados');
+                    if (!document.getElementById('sinResultados')) {
+                        const tr = document.createElement('tr');
+                        tr.id = 'sinResultados';
+                        tr.innerHTML = '<td colspan="8" class="text-center text-muted py-4">No se encontraron resultados</td>';
+                        tbody.innerHTML = '';
+                        tbody.appendChild(tr);
+                    }
+                } else if (document.getElementById('sinResultados')) {
+                    document.getElementById('sinResultados').remove();
+                }
+            });
+        }
+    }, 100);
+    
+    return html;
+}
+
 async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
     if (!nuevoEstado || nuevoEstado === '-- Seleccione --') return;
     
+    // Si el estado es "entregado", preguntar si fue reparado o no
+    if (nuevoEstado === 'entregado') {
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.id = 'modalEstadoEntrega';
+        modal.setAttribute('tabindex', '-1');
+        modal.innerHTML = `
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">¿Cuál fue el resultado?</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p>Selecciona si el celular fue reparado o no antes de marcar como entregado:</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-danger" onclick="procesarEntrega(${ingresoId}, 'no_reparable')">
+                            <i class="fas fa-times me-2"></i> No Reparado
+                        </button>
+                        <button type="button" class="btn btn-success" onclick="procesarEntrega(${ingresoId}, 'reparado')">
+                            <i class="fas fa-check me-2"></i> Reparado
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bs_modal = new bootstrap.Modal(modal);
+        bs_modal.show();
+        
+        // Limpiar el modal después de cerrar
+        modal.addEventListener('hidden.bs.modal', () => {
+            modal.remove();
+        });
+        
+        return;
+    }
+    
+    // Para otros estados, actualizar directamente
     const data = { estado_ingreso: nuevoEstado };
     const response = await apiCall(`/ingresos/${ingresoId}`, {
         method: 'PUT',
@@ -832,6 +961,56 @@ async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
         loadPage('tecnico'); // Recargar el panel
     } else {
         alert('Error al actualizar el estado');
+    }
+}
+
+async function procesarEntrega(ingresoId, estadoFinal) {
+    try {
+        // Primero actualizar al estado intermedio (reparado o no_reparable)
+        let data = { estado_ingreso: estadoFinal };
+        let response = await apiCall(`/ingresos/${ingresoId}`, {
+            method: 'PUT',
+            body: JSON.stringify(data)
+        });
+        
+        if (!response || !response.success) {
+            alert('Error al actualizar el estado intermedio: ' + (response?.error || 'desconocido'));
+            return;
+        }
+        
+        // Luego actualizar a entregado
+        data = { estado_ingreso: 'entregado' };
+        response = await apiCall(`/ingresos/${ingresoId}`, {
+            method: 'PUT',
+            body: JSON.stringify(data)
+        });
+        
+        if (response && response.success) {
+            // Cerrar el modal dinámico
+            const modal = document.getElementById('modalEstadoEntrega');
+            if (modal) {
+                const modalInstance = bootstrap.Modal.getInstance(modal);
+                if (modalInstance) {
+                    modalInstance.hide();
+                }
+                // Remover el modal del DOM
+                setTimeout(() => {
+                    modal.remove();
+                    // Remover backdrop
+                    const backdrop = document.querySelector('.modal-backdrop');
+                    if (backdrop) backdrop.remove();
+                    document.body.classList.remove('modal-open');
+                }, 500);
+            }
+            
+            alert('Ingreso marcado como entregado correctamente');
+            loadPage('tecnico'); // Recargar el panel
+        } else {
+            alert('Error al marcar como entregado: ' + (response?.error || 'desconocido'));
+        }
+    } catch (error) {
+        console.error('Error en procesarEntrega:', error);
+        alert('Error de conexión: ' + error.message);
     }
 }
 
@@ -1420,8 +1599,54 @@ async function verDetallesTecnico(ingresoId) {
     }
     
     const mainContent = document.getElementById('mainContent');
+    
+    // Obtener la información de reparación si está entregado
+    let reparacionInfo = '';
+    if (response.estado_ingreso === 'entregado') {
+        // Determinar si fue reparado o no basándose en las fallas
+        let estadoReparacion = 'Reparado'; // por defecto
+        
+        // Si hay fallas y alguna está en no_reparable, significa que no fue completamente reparado
+        if (response.fallas && response.fallas.length > 0) {
+            const tieneFallaNoReparable = response.fallas.some(f => f.estado_falla === 'no_reparable');
+            if (tieneFallaNoReparable) {
+                estadoReparacion = 'No tuvo reparación';
+            }
+        }
+        
+        // Obtener fecha de entrega (si existe) o usar fecha de ingreso
+        const fechaEntrega = response.fecha_entrega 
+            ? new Date(response.fecha_entrega).toLocaleString('es-ES', { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+              })
+            : new Date(response.fecha_ingreso).toLocaleString('es-ES');
+        
+        reparacionInfo = `
+            <div class="alert alert-success mb-4" style="border-left: 5px solid #28a745;">
+                <div class="row align-items-center">
+                    <div class="col-md-8">
+                        <h5 class="mb-2"><i class="fas fa-check-circle me-2" style="color: #28a745;"></i>Ingreso Entregado</h5>
+                        <p class="mb-1"><strong>Resultado de Reparación:</strong> <span style="font-size: 1.1em; color: #28a745;">${estadoReparacion}</span></p>
+                        <p class="mb-0"><strong>Fecha y Hora de Entrega:</strong> ${fechaEntrega}</p>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+    
     mainContent.innerHTML = `
-        <h2 class="mb-4">Detalles del Ingreso: ${response.numero_ingreso}</h2>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h2 class="mb-0">Detalles del Ingreso: <strong>${response.numero_ingreso}</strong></h2>
+            <button class="btn btn-secondary" onclick="loadPage('tecnico')">
+                <i class="fas fa-arrow-left me-2"></i>Volver
+            </button>
+        </div>
+        
+        ${reparacionInfo}
         
         <div class="card mb-4">
             <div class="card-header bg-primary text-white">
@@ -1431,11 +1656,24 @@ async function verDetallesTecnico(ingresoId) {
                 <div class="row">
                     <div class="col-md-6">
                         <p><strong>Cliente:</strong> ${response.cliente_nombre} ${response.cliente_apellido}</p>
-                        <p><strong>Equipo:</strong> ${response.marca} ${response.modelo}</p>
+                        <p><strong>Cédula:</strong> ${response.cliente_cedula || 'N/A'}</p>
+                        <p><strong>Teléfono:</strong> ${response.cliente_telefono || 'N/A'}</p>
+                        <p><strong>Dirección:</strong> ${response.cliente_direccion || 'N/A'}</p>
                     </div>
                     <div class="col-md-6">
-                        <p><strong>Estado:</strong> <span class="badge bg-warning">${response.estado_ingreso}</span></p>
-                        <p><strong>Valor Total:</strong> <strong>$${response.valor_total || 0}</strong></p>
+                        <p><strong>Equipo:</strong> ${response.marca} ${response.modelo}</p>
+                        <p><strong>Color:</strong> ${response.color || 'N/A'}</p>
+                        <p><strong>Falla General:</strong> ${response.falla_general || 'N/A'}</p>
+                        <p><strong>Estado:</strong> <span class="badge bg-warning" style="font-size: 0.9em;">${response.estado_ingreso}</span></p>
+                    </div>
+                </div>
+                <hr>
+                <div class="row">
+                    <div class="col-md-6">
+                        <p><strong>Fecha de Ingreso:</strong> ${new Date(response.fecha_ingreso).toLocaleString('es-ES')}</p>
+                    </div>
+                    <div class="col-md-6">
+                        <p><strong>Valor Total:</strong> <span style="font-size: 1.2em; color: #28a745;"><strong>$${response.valor_total || 0}</strong></span></p>
                     </div>
                 </div>
             </div>
@@ -1503,22 +1741,28 @@ async function verDetallesTecnico(ingresoId) {
                     </div>
                     <div class="card-body">
                         <div class="d-grid gap-2">
-                            <select class="form-select mb-2" id="estadoSelect" value="${response.estado_ingreso}">
-                                <option value="pendiente" ${response.estado_ingreso === 'pendiente' ? 'selected' : ''}>Pendiente</option>
-                                <option value="en_reparacion" ${response.estado_ingreso === 'en_reparacion' ? 'selected' : ''}>En Reparación</option>
-                                <option value="reparado" ${response.estado_ingreso === 'reparado' ? 'selected' : ''}>Reparado</option>
-                                <option value="entregado" ${response.estado_ingreso === 'entregado' ? 'selected' : ''}>Entregado</option>
-                            </select>
-                            <button class="btn btn-warning" onclick="updateIngresoEstado(${ingresoId})">
-                                Actualizar Estado
-                            </button>
+                            ${response.estado_ingreso !== 'entregado' ? `
+                                <select class="form-select mb-2" id="estadoSelect" value="${response.estado_ingreso}">
+                                    <option value="pendiente" ${response.estado_ingreso === 'pendiente' ? 'selected' : ''}>Pendiente</option>
+                                    <option value="en_reparacion" ${response.estado_ingreso === 'en_reparacion' ? 'selected' : ''}>En Reparación</option>
+                                    <option value="reparado" ${response.estado_ingreso === 'reparado' ? 'selected' : ''}>Reparado</option>
+                                    <option value="no_reparable" ${response.estado_ingreso === 'no_reparable' ? 'selected' : ''}>No Reparable</option>
+                                    <option value="entregado" ${response.estado_ingreso === 'entregado' ? 'selected' : ''}>Entregado</option>
+                                </select>
+                                <button class="btn btn-warning" onclick="updateIngresoEstado(${ingresoId})">
+                                    <i class="fas fa-edit me-2"></i>Actualizar Estado
+                                </button>
+                            ` : `
+                                <div class="alert alert-success mb-2">
+                                    <i class="fas fa-check me-2"></i>
+                                    <strong>Ingreso Entregado</strong>
+                                </div>
+                            `}
                             <button class="btn btn-success" onclick="printTicket(${ingresoId})">
                                 <i class="fas fa-print me-2"></i> Imprimir Ticket
                             </button>
-                            <button class="btn btn-secondary" onclick="loadPage('tecnico')">
-                                Volver
-                            </button>
                         </div>
+                    </div>
                     </div>
                 </div>
             </div>
@@ -1711,7 +1955,28 @@ function addNewFalla(id) { showAlert('Función en desarrollo', 'info'); }
 function updateValor(id, valor) { showAlert('Función en desarrollo', 'info'); }
 function updateEstado(id, estado) { showAlert('Función en desarrollo', 'info'); }
 function removeFalla(id) { showAlert('Función en desarrollo', 'info'); }
-function updateIngresoEstado(id) { showAlert('Función en desarrollo', 'info'); }
+async function updateIngresoEstado(ingresoId) {
+    const estadoSelect = document.getElementById('estadoSelect');
+    const nuevoEstado = estadoSelect.value;
+    
+    if (!nuevoEstado) {
+        showAlert('Por favor selecciona un estado', 'warning');
+        return;
+    }
+    
+    const response = await apiCall(`/ingresos/${ingresoId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ estado_ingreso: nuevoEstado })
+    });
+    
+    if (response && response.success) {
+        showAlert('Estado actualizado correctamente', 'success');
+        // Recarga los detalles técnicos
+        verDetallesTecnico(ingresoId);
+    } else {
+        showAlert(response?.error || 'Error al actualizar el estado', 'danger');
+    }
+}
 
 // Función para agregar nuevo usuario
 // ===== FUNCIONES DE USUARIOS =====
@@ -2003,6 +2268,216 @@ async function deleteFalla(id, nombre) {
         console.error('Error al eliminar falla:', error);
         showAlert('Error al conectar con el servidor', 'danger');
     }
+}
+
+// ===== FUNCIONES DE CLIENTES =====
+async function editarCliente(cedula) {
+    try {
+        // Obtener datos del cliente
+        const ingresos = await apiCall('/ingresos');
+        const cliente = ingresos.data.find(i => i.cliente_cedula === cedula);
+        
+        if (!cliente) {
+            showAlert('Cliente no encontrado', 'danger');
+            return;
+        }
+        
+        // Crear modal para editar
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.id = 'editClienteModal';
+        modal.setAttribute('data-bs-backdrop', 'static');
+        modal.tabIndex = -1;
+        
+        modal.innerHTML = `
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Editar Cliente</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <form id="editClienteForm" onsubmit="submitEditarCliente(event, '${cedula}'); return false;">
+                        <div class="modal-body">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Nombre *</label>
+                                    <input type="text" class="form-control" id="editClienteNombre" 
+                                           value="${cliente.cliente_nombre}" required>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Apellido *</label>
+                                    <input type="text" class="form-control" id="editClienteApellido" 
+                                           value="${cliente.cliente_apellido}" required>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Cédula *</label>
+                                    <input type="text" class="form-control" id="editClienteCedula" 
+                                           value="${cedula}" required>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Teléfono *</label>
+                                    <input type="tel" class="form-control" id="editClienteTelefono" 
+                                           value="${cliente.cliente_telefono || ''}" required>
+                                </div>
+                                <div class="col-md-12 mb-3">
+                                    <label class="form-label">Dirección</label>
+                                    <input type="text" class="form-control" id="editClienteDireccion" 
+                                           value="${cliente.cliente_direccion || ''}">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                            <button type="submit" class="btn btn-primary">Guardar Cambios</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        modal.addEventListener('hidden.bs.modal', function() {
+            modal.remove();
+        });
+    } catch (error) {
+        console.error('Error al cargar cliente:', error);
+        showAlert('Error al cargar datos del cliente', 'danger');
+    }
+}
+
+async function submitEditarCliente(event, cedula) {
+    event.preventDefault();
+    
+    const nombre = document.getElementById('editClienteNombre').value.trim();
+    const apellido = document.getElementById('editClienteApellido').value.trim();
+    const cedulaNueva = document.getElementById('editClienteCedula').value.trim();
+    const telefono = document.getElementById('editClienteTelefono').value.trim();
+    const direccion = document.getElementById('editClienteDireccion').value.trim();
+    
+    if (!nombre || !apellido || !cedulaNueva || !telefono) {
+        showAlert('Nombre, apellido, cédula y teléfono son obligatorios', 'danger');
+        return;
+    }
+    
+    try {
+        // Obtener todos los ingresos del cliente
+        const ingresos = await apiCall('/ingresos');
+        const clienteIngresos = ingresos.data.filter(i => i.cliente_cedula === cedula);
+        
+        // Actualizar cada ingreso con los nuevos datos
+        for (const ingreso of clienteIngresos) {
+            await apiCall(`/ingresos/${ingreso.id}`, {
+                method: 'PUT',
+                body: JSON.stringify({
+                    cliente_nombre: nombre,
+                    cliente_apellido: apellido,
+                    cliente_cedula: cedulaNueva,
+                    cliente_telefono: telefono,
+                    cliente_direccion: direccion
+                })
+            });
+        }
+        
+        showAlert('Cliente actualizado correctamente', 'success');
+        
+        // Cerrar modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('editClienteModal'));
+        modal.hide();
+        
+        // Recargar
+        loadPage('admin');
+    } catch (error) {
+        console.error('Error al actualizar cliente:', error);
+        showAlert('Error al actualizar cliente: ' + error.message, 'danger');
+    }
+}
+
+async function verClienteIngresos(cedula) {
+    try {
+        // Obtener ingresos del cliente
+        const ingresos = await apiCall('/ingresos');
+        const clienteIngresos = ingresos.data.filter(i => i.cliente_cedula === cedula);
+        
+        if (clienteIngresos.length === 0) {
+            showAlert('No hay ingresos para este cliente', 'info');
+            return;
+        }
+        
+        // Crear modal para ver ingresos
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.id = 'verIngresosModal';
+        modal.tabIndex = -1;
+        
+        const clienteNombre = clienteIngresos[0].cliente_nombre + ' ' + clienteIngresos[0].cliente_apellido;
+        
+        modal.innerHTML = `
+            <div class="modal-dialog modal-lg">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Ingresos de ${clienteNombre}</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Dispositivo</th>
+                                        <th>Estado</th>
+                                        <th>Fecha Ingreso</th>
+                                        <th>Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${clienteIngresos.map(ing => `
+                                        <tr>
+                                            <td>#${ing.id}</td>
+                                            <td>${ing.marca_nombre} ${ing.modelo_nombre}</td>
+                                            <td><span class="badge bg-info">${ing.estado_ingreso}</span></td>
+                                            <td>${new Date(ing.fecha_ingreso).toLocaleDateString('es-ES')}</td>
+                                            <td>
+                                                <button class="btn btn-sm btn-primary" onclick="verDetalleIngreso(${ing.id})">
+                                                    <i class="fas fa-eye"></i> Ver
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+        
+        modal.addEventListener('hidden.bs.modal', function() {
+            modal.remove();
+        });
+    } catch (error) {
+        console.error('Error al cargar ingresos:', error);
+        showAlert('Error al cargar ingresos del cliente', 'danger');
+    }
+}
+
+async function verDetalleIngreso(ingresoId) {
+    // Cerrar el modal anterior
+    const modal = bootstrap.Modal.getInstance(document.getElementById('verIngresosModal'));
+    modal.hide();
+    
+    // Cargar detalles técnicos del ingreso
+    verDetallesTecnico(ingresoId);
 }
 
 // Función para editar usuario
