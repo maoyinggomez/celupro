@@ -8,6 +8,15 @@ function initApp() {
     if (currentUser) {
         console.log('User logged in, building menu and loading dashboard');
         buildMenu();
+        
+        // Mostrar botón de usuarios si es admin
+        if (currentUser.rol === 'admin') {
+            const adminBtn = document.getElementById('adminUsersBtn');
+            if (adminBtn) {
+                adminBtn.style.display = 'block';
+            }
+        }
+        
         loadPage('dashboard');
     } else {
         console.log('No user found, redirecting to login');
@@ -39,6 +48,7 @@ function buildMenu() {
             { icon: 'fa-list', label: 'Mis Ingresos', page: 'registros' }
         ],
         'tecnico': [
+            { icon: 'fa-file-import', label: 'Nuevo Ingreso', page: 'ingreso' },
             { icon: 'fa-cogs', label: 'Panel Técnico', page: 'tecnico' },
             { icon: 'fa-list', label: 'Registros', page: 'registros' }
         ]
@@ -119,7 +129,22 @@ async function loadPage(page) {
     
     // Agregar listeners después de cargar el contenido
     try {
-        if (page === 'ingreso') {
+        if (page === 'dashboard') {
+            // Inicializar el dashboard con gráficos
+            setTimeout(async () => {
+                try {
+                    const response = await apiCall('/ingresos?limit=1000');
+                    if (response && response.data) {
+                        window.allIngresos = response.data;
+                        const monthlyData = calculateMonthlyBalance(response.data);
+                        crearGraficoBalance(monthlyData);
+                        actualizarMetricas(response.data);
+                    }
+                } catch (error) {
+                    console.error('Error initializing dashboard:', error);
+                }
+            }, 100);
+        } else if (page === 'ingreso') {
             const form = document.getElementById('ingresoForm');
             if (form) {
                 form.addEventListener('submit', submitIngreso);
@@ -155,30 +180,69 @@ async function loadPage(page) {
 }
 
 async function loadDashboard() {
-    // Obtener estadísticas básicas
-    const response = await apiCall('/ingresos?limit=5');
+    // Obtener todos los ingresos
+    const response = await apiCall('/ingresos?limit=1000');
     
     if (!response.data) {
         return '<div class="alert alert-danger">Error al cargar datos</div>';
     }
-    
+
+    // Calcular balance por mes
+    const monthlyData = calculateMonthlyBalance(response.data);
+    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+    const values = months.map((_, i) => monthlyData[i] || 0);
+
     return `
-        <h2 class="mb-4">Dashboard</h2>
+        <h2 class="mb-4">Dashboard - Balance Mensual</h2>
         
-        <div class="row mb-4">
-            <div class="col-md-3">
-                <div class="card bg-primary text-white">
-                    <div class="card-body">
-                        <h5 class="card-title">Total de Ingresos</h5>
-                        <p class="card-text display-4">${response.total}</p>
+        <div class="card mb-4">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Filtro por Fechas</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3">
+                        <label class="form-label">Desde:</label>
+                        <input type="date" class="form-control" id="fechaDesde">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Hasta:</label>
+                        <input type="date" class="form-control" id="fechaHasta">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">Estado:</label>
+                        <select class="form-control" id="estadoFiltro">
+                            <option value="">Todos</option>
+                            <option value="reparado">Reparado</option>
+                            <option value="entregado">Entregado</option>
+                            <option value="pendiente">Pendiente</option>
+                            <option value="en_reparacion">En Reparación</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3 d-flex align-items-end">
+                        <button class="btn btn-primary w-100" onclick="filtrarDashboard()">
+                            <i class="fas fa-filter me-2"></i> Filtrar
+                        </button>
                     </div>
                 </div>
             </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Balance Mensual</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="chartBalanceMensual" style="max-height: 300px;"></canvas>
+            </div>
+        </div>
+
+        <div class="row mb-4" id="metricsRow">
             <div class="col-md-3">
-                <div class="card bg-warning text-dark">
+                <div class="card bg-info text-white">
                     <div class="card-body">
-                        <h5 class="card-title">Pendientes</h5>
-                        <p class="card-text display-4">${response.data.filter(i => i.estado_ingreso === 'pendiente').length}</p>
+                        <h5 class="card-title">Total Servicios</h5>
+                        <p class="card-text display-4" id="metricTotal">0</p>
                     </div>
                 </div>
             </div>
@@ -186,15 +250,23 @@ async function loadDashboard() {
                 <div class="card bg-success text-white">
                     <div class="card-body">
                         <h5 class="card-title">Reparados</h5>
-                        <p class="card-text display-4">${response.data.filter(i => i.estado_ingreso === 'reparado').length}</p>
+                        <p class="card-text display-4" id="metricReparados">0</p>
                     </div>
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card bg-info text-white">
+                <div class="card bg-primary text-white">
                     <div class="card-body">
-                        <h5 class="card-title">Entregas Hoy</h5>
-                        <p class="card-text display-4">0</p>
+                        <h5 class="card-title">Entregados</h5>
+                        <p class="card-text display-4" id="metricEntregados">0</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-warning text-dark">
+                    <div class="card-body">
+                        <h5 class="card-title">Total Ingresos</h5>
+                        <p class="card-text display-4" id="metricIngresos">$ 0</p>
                     </div>
                 </div>
             </div>
@@ -213,12 +285,13 @@ async function loadDashboard() {
                                 <th>Cliente</th>
                                 <th>Marca</th>
                                 <th>Estado</th>
+                                <th>Valor</th>
                                 <th>Fecha</th>
                                 <th>Acciones</th>
                             </tr>
                         </thead>
                         <tbody>
-                            ${response.data.map(ingreso => `
+                            ${response.data.slice(0, 10).map(ingreso => `
                                 <tr>
                                     <td><strong>${ingreso.numero_ingreso}</strong></td>
                                     <td>${ingreso.cliente_nombre} ${ingreso.cliente_apellido}</td>
@@ -228,6 +301,7 @@ async function loadDashboard() {
                                             ${ingreso.estado_ingreso}
                                         </span>
                                     </td>
+                                    <td>$ ${(ingreso.valor_total || 0).toLocaleString()}</td>
                                     <td>${new Date(ingreso.fecha_ingreso).toLocaleDateString()}</td>
                                     <td>
                                         <button class="btn btn-sm btn-info" 
@@ -243,6 +317,167 @@ async function loadDashboard() {
             </div>
         </div>
     `;
+}
+
+function calculateMonthlyBalance(ingresos) {
+    const monthlyData = new Array(12).fill(0);
+    
+    ingresos.forEach(ingreso => {
+        if ((ingreso.estado_ingreso === 'reparado' || ingreso.estado_ingreso === 'entregado') && ingreso.valor_total) {
+            const fecha = new Date(ingreso.fecha_ingreso);
+            const mes = fecha.getMonth();
+            monthlyData[mes] += ingreso.valor_total;
+        }
+    });
+    
+    return monthlyData;
+}
+
+function crearGraficoBalance(values) {
+    const ctx = document.getElementById('chartBalanceMensual');
+    if (!ctx) {
+        console.warn('chartBalanceMensual element not found');
+        return;
+    }
+    
+    if (typeof Chart === 'undefined') {
+        console.warn('Chart.js library not loaded');
+        return;
+    }
+    
+    try {
+        // Destruir gráfico anterior si existe
+        if (window.chartInstance) {
+            window.chartInstance.destroy();
+        }
+
+        const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+        
+        window.chartInstance = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: months,
+                datasets: [{
+                    label: 'Balance Mensual ($)',
+                    data: values,
+                    backgroundColor: 'rgba(75, 192, 192, 0.7)',
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    borderWidth: 2,
+                    borderRadius: 5,
+                    hoverBackgroundColor: 'rgba(75, 192, 192, 0.9)'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top'
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                        titleColor: '#fff',
+                        bodyColor: '#fff',
+                        padding: 12,
+                        displayColors: true,
+                        callbacks: {
+                            label: function(context) {
+                                const value = context.raw;
+                                return 'Total: $' + value.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) {
+                                return '$' + value.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        ctx.style.maxHeight = '300px';
+    } catch (error) {
+        console.error('Error creating chart:', error);
+    }
+}
+
+function actualizarMetricas(ingresos) {
+    // Verificar que los elementos existan
+    const metricTotal = document.getElementById('metricTotal');
+    const metricReparados = document.getElementById('metricReparados');
+    const metricEntregados = document.getElementById('metricEntregados');
+    const metricIngresos = document.getElementById('metricIngresos');
+    
+    if (!metricTotal || !metricReparados || !metricEntregados || !metricIngresos) {
+        console.warn('Metric elements not found');
+        return;
+    }
+    
+    const fechaDesde = document.getElementById('fechaDesde')?.value;
+    const fechaHasta = document.getElementById('fechaHasta')?.value;
+    const estadoFiltro = document.getElementById('estadoFiltro')?.value;
+
+    let filtrados = ingresos;
+
+    if (fechaDesde) {
+        const desde = new Date(fechaDesde);
+        filtrados = filtrados.filter(i => new Date(i.fecha_ingreso) >= desde);
+    }
+
+    if (fechaHasta) {
+        const hasta = new Date(fechaHasta);
+        hasta.setHours(23, 59, 59, 999);
+        filtrados = filtrados.filter(i => new Date(i.fecha_ingreso) <= hasta);
+    }
+
+    if (estadoFiltro && estadoFiltro !== 'todos') {
+        filtrados = filtrados.filter(i => i.estado_ingreso === estadoFiltro);
+    }
+
+    const reparados = filtrados.filter(i => i.estado_ingreso === 'reparado').length;
+    const entregados = filtrados.filter(i => i.estado_ingreso === 'entregado').length;
+    const totalIngresos = filtrados.reduce((sum, i) => sum + (i.valor_total || 0), 0);
+
+    metricTotal.textContent = filtrados.length;
+    metricReparados.textContent = reparados;
+    metricEntregados.textContent = entregados;
+    metricIngresos.textContent = '$ ' + totalIngresos.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+}
+
+function filtrarDashboard() {
+    const fechaDesde = document.getElementById('fechaDesde')?.value;
+    const fechaHasta = document.getElementById('fechaHasta')?.value;
+    const estadoFiltro = document.getElementById('estadoFiltro')?.value;
+
+    // Recalcular balance mensual con filtros
+    let filtrados = window.allIngresos;
+
+    if (fechaDesde) {
+        const desde = new Date(fechaDesde);
+        filtrados = filtrados.filter(i => new Date(i.fecha_ingreso) >= desde);
+    }
+
+    if (fechaHasta) {
+        const hasta = new Date(fechaHasta);
+        hasta.setHours(23, 59, 59, 999);
+        filtrados = filtrados.filter(i => new Date(i.fecha_ingreso) <= hasta);
+    }
+
+    if (estadoFiltro) {
+        filtrados = filtrados.filter(i => i.estado_ingreso === estadoFiltro);
+    }
+
+    const monthlyData = calculateMonthlyBalance(filtrados);
+    const values = monthlyData;
+    
+    crearGraficoBalance(values);
+    actualizarMetricas(filtrados);
 }
 
 async function loadIngresoForm() {
@@ -417,6 +652,18 @@ async function loadIngresoForm() {
                           placeholder="Descripción de la falla reportada" required></textarea>
             </div>
             
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">Valor de Reparación</label>
+                    <div class="input-group">
+                        <span class="input-group-text">$</span>
+                        <input type="number" class="form-control" id="valor_reparacion" 
+                               placeholder="0" min="0" step="1000">
+                    </div>
+                    <small class="text-muted">Dejar vacío para asignar después</small>
+                </div>
+            </div>
+            
             <div class="mb-3">
                 <label class="form-label">Notas Adicionales</label>
                 <textarea class="form-control" id="notas_adicionales" rows="2" 
@@ -543,6 +790,7 @@ async function submitIngreso(e) {
         estado_apagado: document.getElementById('estado_apagado').checked,
         tiene_clave: document.getElementById('tiene_clave').checked,
         clave: document.getElementById('clave').value,
+        valor_reparacion: document.getElementById('valor_reparacion').value ? parseInt(document.getElementById('valor_reparacion').value) : null,
         fallas_iniciales: fallasSeleccionadas
     };
     
@@ -1782,7 +2030,154 @@ function getStatusColor(estado) {
 }
 
 async function printTicket(ingresoId) {
-    showAlert('Función de impresión en desarrollo', 'info');
+    try {
+        showAlert('Generando ticket de impresión...', 'info');
+        
+        const response = await apiCall(`/ingresos/${ingresoId}/ticket`);
+        
+        if (response.error) {
+            showAlert('Error: ' + response.error, 'danger');
+            return;
+        }
+        
+        if (!response.ticket_data) {
+            showAlert('No se pudo generar el ticket', 'danger');
+            return;
+        }
+        
+        // Convertir base64 a bytes
+        const binaryString = atob(response.ticket_data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        
+        // Crear blob y enviarlo a la impresora
+        const blob = new Blob([bytes], { type: 'application/octet-stream' });
+        
+        // Método 1: Usando API Print (Chrome, Edge)
+        if (navigator.usb) {
+            try {
+                // Obtener dispositivos USB disponibles
+                const devices = await navigator.usb.getDevices();
+                
+                if (devices.length === 0) {
+                    showAlert('No se encontraron impresoras conectadas. Usando simulación...', 'warning');
+                    simulatePrint(response);
+                    return;
+                }
+                
+                // Usar primer dispositivo encontrado
+                const device = devices[0];
+                await device.open();
+                
+                // Enviar comandos a la impresora
+                if (device.configuration === null) {
+                    await device.selectConfiguration(1);
+                }
+                
+                const interfaces = device.configuration.interfaces;
+                const interfaceNum = interfaces[0].interfaceNumber;
+                
+                await device.claimInterface(interfaceNum);
+                
+                // Buscar endpoint OUT
+                const endpoints = interfaces[0].alternate.endpoints;
+                const outEndpoint = endpoints.find(e => e.direction === 'out');
+                
+                if (!outEndpoint) {
+                    throw new Error('No se encontró endpoint de salida');
+                }
+                
+                await device.transferOut(outEndpoint.endpointNumber, bytes);
+                
+                showAlert('[OK] Impresión enviada a ' + response.cliente, 'success');
+                
+                // Cerrar dispositivo
+                await device.close();
+                
+            } catch (usbError) {
+                console.error('Error USB:', usbError);
+                // Fallback a simulación
+                simulatePrint(response);
+            }
+        } else {
+            // Fallback para navegadores sin WebUSB
+            simulatePrint(response);
+        }
+        
+    } catch (error) {
+        console.error('Error en printTicket:', error);
+        showAlert('Error al generar ticket: ' + error.message, 'danger');
+    }
+}
+
+// Función auxiliar para simular impresión (muestra contenido en ventana nueva)
+function simulatePrint(ticketData) {
+    // Mostrar alerta que la impresión se ha simulado
+    showAlert('[WARNING] Impresora no disponible. Mostrando vista previa...', 'warning');
+    
+    // Crear ventana con vista previa del ticket
+    const win = window.open('', '_blank', 'width=300,height=600');
+    
+    win.document.write(`
+        <html>
+        <head>
+            <title>Ticket de Impresión - ${ticketData.numero_ingreso}</title>
+            <style>
+                body {
+                    font-family: monospace;
+                    margin: 0;
+                    padding: 10px;
+                    width: 58mm;
+                    max-width: 250px;
+                    font-size: 12px;
+                }
+                .ticket {
+                    border: 1px dashed #ccc;
+                    padding: 10px;
+                    text-align: center;
+                }
+                .header {
+                    font-weight: bold;
+                    margin-bottom: 10px;
+                }
+                .numero {
+                    font-size: 18px;
+                    font-weight: bold;
+                    margin: 10px 0;
+                }
+                .cliente {
+                    margin-top: 10px;
+                    border-top: 1px solid #000;
+                    padding-top: 10px;
+                }
+                .footer {
+                    margin-top: 10px;
+                    border-top: 1px solid #000;
+                    padding-top: 10px;
+                    font-size: 10px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="ticket">
+                <div class="header">CELUPRO</div>
+                <div class="numero">Ingreso #${ticketData.numero_ingreso}</div>
+                <div class="cliente">
+                    <strong>${ticketData.cliente}</strong>
+                </div>
+                <div class="footer">
+                    <p>Impresión: ${new Date().toLocaleString('es-CO')}</p>
+                    <p>[ ][ ][ ]</p>
+                </div>
+            </div>
+            <script>
+                window.print();
+            </script>
+        </body>
+        </html>
+    `);
 }
 
 // Función para eliminar ingreso (solo admin)
@@ -1948,13 +2343,233 @@ async function deleteModelo(modeloId) {
         showAlert(response.error || 'Error al eliminar modelo', 'danger');
     }
 }
-function showNewFallaModal() { showAlert('Función en desarrollo', 'info'); }
-function editFalla(id) { showAlert('Función en desarrollo', 'info'); }
-function deleteFalla(id) { showAlert('Función en desarrollo', 'info'); }
-function addNewFalla(id) { showAlert('Función en desarrollo', 'info'); }
-function updateValor(id, valor) { showAlert('Función en desarrollo', 'info'); }
-function updateEstado(id, estado) { showAlert('Función en desarrollo', 'info'); }
-function removeFalla(id) { showAlert('Función en desarrollo', 'info'); }
+// Función para crear nueva falla
+async function showNewFallaModal() {
+    const nombre = prompt('Ingresa el nombre de la falla (ej: Pantalla rota, Batería muerta):');
+    
+    if (!nombre || nombre.trim() === '') {
+        return;
+    }
+    
+    const descripcion = prompt('Descripción de la falla (opcional):', '');
+    const precio = prompt('Precio sugerido (opcional, ej: 50000):', '0');
+    
+    try {
+        const response = await apiCall('/fallas', {
+            method: 'POST',
+            body: JSON.stringify({
+                nombre: nombre.trim(),
+                descripcion: descripcion.trim(),
+                precio_sugerido: parseInt(precio) || 0
+            })
+        });
+        
+        if (response && response.id) {
+            showAlert(`Falla "${nombre}" agregada correctamente`, 'success');
+            loadPage('admin');
+        } else if (response && response.error) {
+            showAlert(response.error, 'danger');
+        } else {
+            showAlert('Error desconocido al agregar falla', 'danger');
+        }
+    } catch (error) {
+        console.error('Error en showNewFallaModal:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+// Función para editar falla existente
+async function editFalla(fallaId) {
+    try {
+        const fallas = await apiCall('/fallas');
+        const falla = fallas.find(f => f.id === fallaId);
+        
+        if (!falla) {
+            showAlert('Falla no encontrada', 'danger');
+            return;
+        }
+        
+        const nuevoNombre = prompt(`Nuevo nombre para la falla "${falla.nombre}":`, falla.nombre);
+        
+        if (nuevoNombre && nuevoNombre.trim() !== '' && nuevoNombre !== falla.nombre) {
+            const nuevaDescripcion = prompt('Nueva descripción:', falla.descripcion || '');
+            const nuevoPrecio = prompt('Nuevo precio sugerido:', falla.precio_sugerido || '0');
+            
+            const response = await apiCall(`/fallas/${fallaId}`, {
+                method: 'PUT',
+                body: JSON.stringify({
+                    nombre: nuevoNombre.trim(),
+                    descripcion: nuevaDescripcion.trim(),
+                    precio_sugerido: parseInt(nuevoPrecio) || 0
+                })
+            });
+            
+            if (response.success) {
+                showAlert('Falla actualizada correctamente', 'success');
+                loadPage('admin');
+            } else {
+                showAlert(response.error || 'Error al actualizar falla', 'danger');
+            }
+        }
+    } catch (error) {
+        console.error('Error en editFalla:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+// Función para eliminar falla
+async function deleteFalla(fallaId) {
+    if (!confirm('¿Estás seguro de que deseas eliminar esta falla? Esta acción no se puede deshacer.')) {
+        return;
+    }
+    
+    try {
+        const response = await apiCall(`/fallas/${fallaId}`, {
+            method: 'DELETE'
+        });
+        
+        if (response.success) {
+            showAlert('Falla eliminada correctamente', 'success');
+            loadPage('admin');
+        } else {
+            showAlert(response.error || 'Error al eliminar falla', 'danger');
+        }
+    } catch (error) {
+        console.error('Error en deleteFalla:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+// Función para agregar falla existente a un ingreso
+async function addNewFalla(ingresoId) {
+    try {
+        // Obtener todas las fallas disponibles
+        const fallas = await apiCall('/fallas');
+        
+        if (!fallas || fallas.length === 0) {
+            showAlert('No hay fallas disponibles. Crea una nueva primero.', 'warning');
+            return;
+        }
+        
+        // Obtener fallas ya agregadas a este ingreso
+        const ingresoFallas = await apiCall(`/ingresos/${ingresoId}/fallas`);
+        const fallaIds = ingresoFallas.map(f => f.id);
+        
+        // Filtrar fallas no agregadas
+        const fallasDisponibles = fallas.filter(f => !fallaIds.includes(f.id));
+        
+        if (fallasDisponibles.length === 0) {
+            showAlert('Todas las fallas disponibles ya están agregadas', 'warning');
+            return;
+        }
+        
+        // Crear lista para seleccionar
+        const options = fallasDisponibles.map((f, i) => `${i + 1}. ${f.nombre} ($${f.precio_sugerido || 0})`).join('\n');
+        const selection = prompt('Selecciona la falla a agregar:\n\n' + options + '\n\nIngresa el número:', '1');
+        
+        if (!selection) return;
+        
+        const index = parseInt(selection) - 1;
+        if (index < 0 || index >= fallasDisponibles.length) {
+            showAlert('Selección inválida', 'danger');
+            return;
+        }
+        
+        const fallaSeleccionada = fallasDisponibles[index];
+        const valor = prompt(`Valor de reparación para "${fallaSeleccionada.nombre}":`, fallaSeleccionada.precio_sugerido || '0');
+        
+        if (!valor) return;
+        
+        const response = await apiCall(`/ingresos/${ingresoId}/fallas`, {
+            method: 'POST',
+            body: JSON.stringify({
+                falla_id: fallaSeleccionada.id,
+                valor_reparacion: parseInt(valor) || 0
+            })
+        });
+        
+        if (response.success || response.id) {
+            showAlert(`Falla "${fallaSeleccionada.nombre}" agregada correctamente`, 'success');
+            loadPage('registros');
+        } else {
+            showAlert(response.error || 'Error al agregar falla', 'danger');
+        }
+    } catch (error) {
+        console.error('Error en addNewFalla:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+// Función para actualizar valor de reparación de una falla
+async function updateValor(ingresoId, fallaId) {
+    try {
+        const nuevoValor = prompt('Ingresa el nuevo valor de reparación:', '0');
+        
+        if (nuevoValor === null || nuevoValor === '') return;
+        
+        const response = await apiCall(`/ingresos/${ingresoId}/fallas/${fallaId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                valor_reparacion: parseInt(nuevoValor) || 0
+            })
+        });
+        
+        if (response.success) {
+            showAlert('Valor actualizado correctamente', 'success');
+            loadPage('registros');
+        } else {
+            showAlert(response.error || 'Error al actualizar valor', 'danger');
+        }
+    } catch (error) {
+        console.error('Error en updateValor:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+// Función para actualizar estado (ya existe pero mejoramos)
+async function updateEstado(ingresoId, nuevoEstado) {
+    try {
+        const response = await apiCall(`/ingresos/${ingresoId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                estado: nuevoEstado
+            })
+        });
+        
+        if (response.success) {
+            showAlert(`Estado actualizado a "${nuevoEstado}"`, 'success');
+            loadPage('registros');
+        } else {
+            showAlert(response.error || 'Error al actualizar estado', 'danger');
+        }
+    } catch (error) {
+        console.error('Error en updateEstado:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+// Función para remover falla de un ingreso
+async function removeFalla(ingresoId, fallaId) {
+    if (!confirm('¿Estás seguro de que deseas remover esta falla del ingreso?')) {
+        return;
+    }
+    
+    try {
+        const response = await apiCall(`/ingresos/${ingresoId}/fallas/${fallaId}`, {
+            method: 'DELETE'
+        });
+        
+        if (response.success) {
+            showAlert('Falla removida correctamente', 'success');
+            loadPage('registros');
+        } else {
+            showAlert(response.error || 'Error al remover falla', 'danger');
+        }
+    } catch (error) {
+        console.error('Error en removeFalla:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
 async function updateIngresoEstado(ingresoId) {
     const estadoSelect = document.getElementById('estadoSelect');
     const nuevoEstado = estadoSelect.value;
@@ -2509,5 +3124,142 @@ async function deleteUser(userId) {
     } catch (error) {
         console.error('Error en deleteUser:', error);
         showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+// ===== MODAL DE GESTIÓN DE USUARIOS =====
+
+async function openAdminUsersModal() {
+    const modal = new bootstrap.Modal(document.getElementById('adminUsersModal'));
+    
+    try {
+        const usuarios = await apiCall('/admin/usuarios');
+        
+        const html = `
+            <div>
+                <h6 class="mb-3">Crear Nuevo Usuario</h6>
+                <form id="quickUserForm" onsubmit="submitQuickNewUser(event); return false;">
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label small">Usuario *</label>
+                            <input type="text" class="form-control form-control-sm" id="quickUserUsuario" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">Nombre *</label>
+                            <input type="text" class="form-control form-control-sm" id="quickUserNombre" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">Contraseña *</label>
+                            <input type="password" class="form-control form-control-sm" id="quickUserPassword" required minlength="6">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">Rol *</label>
+                            <select class="form-select form-select-sm" id="quickUserRol" required>
+                                <option value="">Seleccione...</option>
+                                <option value="admin">Administrador</option>
+                                <option value="empleado">Empleado</option>
+                                <option value="tecnico">Técnico</option>
+                            </select>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-sm btn-primary">
+                        <i class="fas fa-save me-1"></i> Crear Usuario
+                    </button>
+                </form>
+                
+                <hr class="my-3">
+                <h6 class="mb-3">Usuarios Existentes</h6>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Usuario</th>
+                                <th>Nombre</th>
+                                <th>Rol</th>
+                                <th width="100">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${Array.isArray(usuarios) ? usuarios.map(u => `
+                                <tr>
+                                    <td>${u.usuario}</td>
+                                    <td>${u.nombre}</td>
+                                    <td><span class="badge bg-info">${u.rol}</span></td>
+                                    <td>
+                                        <button class="btn btn-sm btn-danger" onclick="deleteUserFromModal(${u.id}, '${u.usuario}')">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                            `).join('') : '<tr><td colspan="4" class="text-center">No hay usuarios</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+        
+        document.getElementById('adminUsersContent').innerHTML = html;
+        modal.show();
+    } catch (error) {
+        console.error('Error loading users:', error);
+        document.getElementById('adminUsersContent').innerHTML = `<div class="alert alert-danger">Error al cargar usuarios: ${error.message}</div>`;
+    }
+}
+
+async function submitQuickNewUser(event) {
+    event.preventDefault();
+    
+    const usuario = document.getElementById('quickUserUsuario').value.trim();
+    const nombre = document.getElementById('quickUserNombre').value.trim();
+    const password = document.getElementById('quickUserPassword').value;
+    const rol = document.getElementById('quickUserRol').value;
+    
+    if (!usuario || !nombre || !password || !rol) {
+        showAlert('Todos los campos son obligatorios', 'danger');
+        return;
+    }
+    
+    try {
+        const response = await apiCall('/admin/usuarios', {
+            method: 'POST',
+            body: JSON.stringify({
+                usuario,
+                nombre,
+                rol,
+                contraseña: password
+            })
+        });
+        
+        if (response && response.id) {
+            showAlert(`Usuario "${usuario}" creado correctamente`, 'success');
+            openAdminUsersModal();
+        } else if (response && response.error) {
+            showAlert(response.error, 'danger');
+        } else {
+            showAlert('Error al crear usuario', 'danger');
+        }
+    } catch (error) {
+        console.error('Error al crear usuario:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+async function deleteUserFromModal(id, nombre) {
+    if (!confirm(`¿Eliminar el usuario "${nombre}"?`)) return;
+    
+    try {
+        const response = await apiCall(`/admin/usuarios/${id}`, {
+            method: 'DELETE'
+        });
+        
+        if (response && response.success) {
+            showAlert(`Usuario "${nombre}" eliminado`, 'success');
+            openAdminUsersModal();
+        } else {
+            showAlert(response?.error || 'Error al eliminar usuario', 'danger');
+        }
+    } catch (error) {
+        console.error('Error al eliminar usuario:', error);
+        showAlert('Error al conectar con el servidor', 'danger');
     }
 }

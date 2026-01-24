@@ -155,6 +155,20 @@ def insert_default_data(cursor, conn):
     VALUES (?, ?, ?, ?)
     ''', ('admin', hashed_password, 'Administrador', 'admin'))
     
+    # Usuario empleado por defecto
+    hashed_password_empleado = generate_password_hash('empleado123')
+    cursor.execute('''
+    INSERT INTO usuarios (usuario, contraseña, nombre, rol)
+    VALUES (?, ?, ?, ?)
+    ''', ('empleado', hashed_password_empleado, 'Empleado', 'empleado'))
+    
+    # Usuario técnico por defecto
+    hashed_password_tecnico = generate_password_hash('tecnico123')
+    cursor.execute('''
+    INSERT INTO usuarios (usuario, contraseña, nombre, rol)
+    VALUES (?, ?, ?, ?)
+    ''', ('tecnico', hashed_password_tecnico, 'Técnico', 'tecnico'))
+    
     # Marcas por defecto
     marcas_por_defecto = [
         'Apple',

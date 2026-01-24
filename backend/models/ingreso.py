@@ -30,6 +30,7 @@ class Ingreso:
         color = datos.get('color', '').upper()
         falla_general = datos.get('falla_general', '').upper()
         notas_adicionales = datos.get('notas_adicionales', '').upper()
+        valor_total = datos.get('valor_reparacion', 0)
         
         query = '''
         INSERT INTO ingresos (
@@ -37,8 +38,8 @@ class Ingreso:
             cliente_nombre, cliente_apellido, cliente_cedula, cliente_telefono, cliente_direccion,
             color, falla_general, notas_adicionales,
             estado_display, estado_tactil, estado_botones, estado_apagado,
-            tiene_clave, clave
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tiene_clave, clave, valor_total
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         
         params = (
@@ -59,7 +60,8 @@ class Ingreso:
             datos.get('estado_botones', False),
             datos.get('estado_apagado', False),
             datos.get('tiene_clave', False),
-            datos.get('clave', '')
+            datos.get('clave', ''),
+            valor_total
         )
         
         ingreso_id = db.execute_update(query, params)

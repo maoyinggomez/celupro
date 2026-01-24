@@ -242,7 +242,7 @@ def delete_falla(falla_id):
 
 # ===== RUTAS DE INGRESOS TÉCNICOS =====
 @app.route('/api/ingresos', methods=['POST'])
-@role_required('admin', 'empleado')
+@role_required('admin', 'empleado', 'tecnico')
 def create_ingreso():
     """Crea un nuevo ingreso técnico"""
     data = request.get_json()
