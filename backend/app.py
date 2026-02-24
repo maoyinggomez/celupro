@@ -574,49 +574,35 @@ def update_configuracion():
 def upload_logo():
     """Sube un logo para el negocio"""
     try:
-        print("=== UPLOAD LOGO DEBUG ===")
-        print(f"Content-Type: {request.content_type}")
-        print(f"Files en request: {list(request.files.keys())}")
-        print(f"Form data: {list(request.form.keys())}")
-        
         # Verificar que llega el archivo
         if 'logo' not in request.files:
-            print("ERROR: No se encontró 'logo' en request.files")
             return jsonify({'error': 'No se envió ningún archivo'}), 400
         
         file = request.files['logo']
-        print(f"Archivo recibido: {file}")
-        print(f"Filename: {file.filename}")
         
         # Verificar que tiene nombre
         if not file or file.filename == '':
-            print("ERROR: Archivo sin nombre")
             return jsonify({'error': 'Archivo sin nombre'}), 400
         
         # Verificar extensión
         if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-            print(f"ERROR: Extensión inválida: {file.filename}")
             return jsonify({'error': 'Solo se permiten archivos PNG o JPG'}), 400
         
         # Crear directorio si no existe
         logos_dir = Path(app.config['UPLOAD_FOLDER'])
-        print(f"Directorio de logos: {logos_dir}")
         logos_dir.mkdir(parents=True, exist_ok=True)
         
         # Guardar con nombre fijo
         ext = file.filename.split('.')[-1].lower()
         filename = f'logo.{ext}'
         filepath = logos_dir / filename
-        print(f"Guardando en: {filepath}")
         
         # Guardar archivo
         file.save(str(filepath))
-        print(f"Archivo guardado exitosamente")
         
         # Actualizar configuración
         logo_url = f'/static/logos/{filename}'
         Configuracion.set('logo_url', logo_url)
-        print(f"Configuración actualizada con URL: {logo_url}")
         
         return jsonify({
             'success': True, 
@@ -625,7 +611,6 @@ def upload_logo():
         }), 200
         
     except Exception as e:
-        print(f"EXCEPCIÓN: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Error al procesar archivo: {str(e)}'}), 500
@@ -687,38 +672,35 @@ def buscar_clientes():
     """Busca clientes por nombre, cédula o teléfono"""
     try:
         query_param = request.args.get('q', '').upper().strip()
-        print(f"DEBUG: Buscando: {query_param}")
         
         if not query_param or len(query_param) < 2:
             return jsonify({'data': []}), 200
         
         query = '''
-        SELECT DISTINCT
-            cliente_nombre, 
-            cliente_apellido, 
+        SELECT
             cliente_cedula,
-            cliente_telefono,
-            cliente_direccion
+            MIN(cliente_nombre) as cliente_nombre,
+            MIN(cliente_apellido) as cliente_apellido,
+            MIN(cliente_telefono) as cliente_telefono,
+            MIN(cliente_direccion) as cliente_direccion
         FROM ingresos
         WHERE 
             UPPER(cliente_nombre) LIKE ? OR
             UPPER(cliente_apellido) LIKE ? OR
             UPPER(cliente_cedula) LIKE ? OR
             UPPER(cliente_telefono) LIKE ?
+        GROUP BY cliente_cedula
         ORDER BY cliente_nombre, cliente_apellido
         LIMIT 10
         '''
         
         search_term = f"%{query_param}%"
-        print(f"DEBUG: Search term: {search_term}")
         
         from models.database import db as database
         results = database.execute_query(query, (search_term, search_term, search_term, search_term))
-        print(f"DEBUG: Resultados encontrados: {len(results)}")
         
         clientes = []
         for row in results:
-            print(f"DEBUG: Row: {dict(row)}")
             clientes.append({
                 'nombre': row['cliente_nombre'],
                 'apellido': row['cliente_apellido'],
@@ -727,14 +709,11 @@ def buscar_clientes():
                 'direccion': row['cliente_direccion']
             })
         
-        print(f"DEBUG: Retornando {len(clientes)} clientes")
         return jsonify({'data': clientes}), 200
     except Exception as e:
         import traceback
         error_msg = str(e)
         trace = traceback.format_exc()
-        print(f"ERROR en buscar_clientes: {error_msg}")
-        print(f"TRACEBACK: {trace}")
         return jsonify({'error': error_msg, 'trace': trace}), 500
 
 if __name__ == '__main__':

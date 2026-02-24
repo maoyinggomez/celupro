@@ -1,9 +1,56 @@
 // Aplicación principal
 let currentPage = null;
+let isSubmittingIngreso = false;
+const printingIngresos = new Set();
+let adminActiveTab = 'usuarios';
+
+function getCurrentUserSafe() {
+    try {
+        if (typeof currentUser !== 'undefined' && currentUser) {
+            return currentUser;
+        }
+    } catch (error) {
+    }
+
+    try {
+        const storedUser = localStorage.getItem('user');
+        if (!storedUser) return null;
+        return JSON.parse(storedUser);
+    } catch (error) {
+        return null;
+    }
+}
+
+function setCurrentUserSafe(user) {
+    try {
+        if (typeof currentUser !== 'undefined') {
+            currentUser = user;
+        }
+    } catch (error) {
+    }
+}
+
+window.addEventListener('error', function(event) {
+    const mainContent = document.getElementById('mainContent');
+    if (mainContent && !mainContent.innerHTML.trim()) {
+        mainContent.innerHTML = `<div class="alert alert-danger">Error de aplicación: ${event.message}</div>`;
+    }
+});
+
+window.addEventListener('unhandledrejection', function(event) {
+    const mainContent = document.getElementById('mainContent');
+    if (mainContent && !mainContent.innerHTML.trim()) {
+        mainContent.innerHTML = `<div class="alert alert-danger">Error asíncrono: ${event.reason?.message || event.reason || 'desconocido'}</div>`;
+    }
+});
 
 function initApp() {
     console.log('initApp() called');
-    console.log('currentUser:', currentUser);
+
+    const user = getCurrentUserSafe();
+    if (user) {
+        setCurrentUserSafe(user);
+    }
     
     // Configurar event listener global para el formulario de configuración
     // Usa delegación de eventos para que funcione con contenido dinámico
@@ -14,12 +61,12 @@ function initApp() {
         }
     }, true);
     
-    if (currentUser) {
+    if (user && user.rol) {
         console.log('User logged in, building menu and loading dashboard');
         buildMenu();
         
         // Mostrar botón de usuarios si es admin
-        if (currentUser.rol === 'admin') {
+        if (user.rol === 'admin') {
             const adminBtn = document.getElementById('adminUsersBtn');
             if (adminBtn) {
                 adminBtn.style.display = 'block';
@@ -43,6 +90,11 @@ if (document.readyState === 'loading') {
 function buildMenu() {
     const menu = document.getElementById('menuNav');
     if (!menu) return;
+    const user = getCurrentUserSafe();
+    if (!user || !user.rol) {
+        menu.innerHTML = '';
+        return;
+    }
     
     const menuItems = {
         'admin': [
@@ -63,7 +115,7 @@ function buildMenu() {
         ]
     };
     
-    const items = menuItems[currentUser.rol] || [];
+    const items = menuItems[user.rol] || [];
     
     menu.innerHTML = items.map(item => `
         <li class="nav-item mb-2">
@@ -76,6 +128,18 @@ function buildMenu() {
 }
 
 async function loadPage(page) {
+    const user = getCurrentUserSafe();
+
+    if (page === 'admin') {
+        const activeAdminTab = document.querySelector('#mainContent .nav-tabs .nav-link.active');
+        if (activeAdminTab) {
+            const href = activeAdminTab.getAttribute('href');
+            if (href && href.startsWith('#')) {
+                adminActiveTab = href.substring(1);
+            }
+        }
+    }
+
     currentPage = page;
     const mainContent = document.getElementById('mainContent');
     
@@ -97,14 +161,6 @@ async function loadPage(page) {
                 break;
             case 'ingreso':
                 content = await loadIngresoForm();
-                // Luego de renderizar, agregamos los event listeners
-                setTimeout(() => {
-                    const buscarInput = document.getElementById('buscar_cliente');
-                    if (buscarInput) {
-                        buscarInput.addEventListener('keyup', buscarClientes);
-                        buscarInput.addEventListener('input', buscarClientes);
-                    }
-                }, 100);
                 break;
             case 'registros':
                 console.log('Calling loadRegistros...');
@@ -112,14 +168,14 @@ async function loadPage(page) {
                 console.log('loadRegistros returned, content length:', content.length);
                 break;
             case 'tecnico':
-                if (currentUser.rol !== 'tecnico' && currentUser.rol !== 'admin') {
+                if (!user || (user.rol !== 'tecnico' && user.rol !== 'admin')) {
                     content = '<div class="alert alert-danger">Acceso denegado</div>';
                 } else {
                     content = await loadTecnicoPanel();
                 }
                 break;
             case 'admin':
-                if (currentUser.rol !== 'admin') {
+                if (!user || user.rol !== 'admin') {
                     content = '<div class="alert alert-danger">Acceso denegado</div>';
                 } else {
                     content = await loadAdminPanel();
@@ -154,27 +210,44 @@ async function loadPage(page) {
                 }
             }, 100);
         } else if (page === 'ingreso') {
+            // Inicializar wizard con delay para asegurar que el DOM está listo
+            setTimeout(() => {
+                try {
+                    console.log('Inicializando wizard...');
+                    currentWizardStep = 1;
+                    const paso1 = document.getElementById('paso1');
+                    if (!paso1) {
+                        console.error('paso1 elemento no encontrado en DOM');
+                        return;
+                    }
+                    updateWizardDisplay();
+                    console.log('wizard inicializado');
+                    
+                    // Agregar listener al campo de búsqueda de clientes
+                    const buscarClienteInput = document.getElementById('buscar_cliente');
+                    if (buscarClienteInput) {
+                        buscarClienteInput.addEventListener('keyup', buscarClientes);
+                        buscarClienteInput.addEventListener('input', buscarClientes);
+                    }
+                    
+                    // Agregar listener al checkbox de clave
+                    const tieneClaveCheckbox = document.getElementById('tiene_clave');
+                    if (tieneClaveCheckbox) {
+                        tieneClaveCheckbox.addEventListener('change', function() {
+                            const div = document.getElementById('claveDiv');
+                            if (div) {
+                                div.style.display = this.checked ? 'block' : 'none';
+                            }
+                        });
+                    }
+                } catch (error) {
+                    console.error('Error en wizard initialization:', error);
+                }
+            }, 100);
+            
             const form = document.getElementById('ingresoForm');
             if (form) {
                 form.addEventListener('submit', submitIngreso);
-            }
-            
-            // Agregar listener al campo de búsqueda de clientes
-            const buscarClienteInput = document.getElementById('buscar_cliente');
-            if (buscarClienteInput) {
-                buscarClienteInput.addEventListener('keyup', buscarClientes);
-                buscarClienteInput.addEventListener('input', buscarClientes);
-            }
-            
-            // Agregar listener al checkbox de clave
-            const tieneClaveCheckbox = document.getElementById('tiene_clave');
-            if (tieneClaveCheckbox) {
-                tieneClaveCheckbox.addEventListener('change', function() {
-                    const div = document.getElementById('claveDiv');
-                    if (div) {
-                        div.style.display = this.checked ? 'block' : 'none';
-                    }
-                });
             }
             
             // Agregar listener al cambio de marca
@@ -182,6 +255,16 @@ async function loadPage(page) {
             if (marcaSelect) {
                 marcaSelect.addEventListener('change', loadModelosByMarca);
             }
+        } else if (page === 'admin') {
+            const adminTabs = document.querySelectorAll('#mainContent .nav-tabs .nav-link[data-bs-toggle="tab"]');
+            adminTabs.forEach((tab) => {
+                tab.addEventListener('shown.bs.tab', (event) => {
+                    const href = event.target.getAttribute('href');
+                    if (href && href.startsWith('#')) {
+                        adminActiveTab = href.substring(1);
+                    }
+                });
+            });
         }
     } catch (error) {
         console.error('Error adding event listeners:', error);
@@ -493,199 +576,247 @@ function filtrarDashboard() {
 }
 
 async function loadIngresoForm() {
+    console.log('loadIngresoForm() iniciado');
     const marcas = await apiCall('/marcas');
+    console.log('Marcas response:', marcas);
     const fallas = await apiCall('/fallas');
+    console.log('Fallas response:', fallas);
     
     if (!marcas || !fallas) {
-        return '<div class="alert alert-danger">Error al cargar datos</div>';
+        console.error('Error: marcas or fallas is null/undefined', {marcas, fallas});
+        return '<div class="alert alert-danger">Error al cargar datos. Marcas: ' + (marcas ? 'OK' : 'FALLO') + ', Fallas: ' + (fallas ? 'OK' : 'FALLO') + '</div>';
     }
+    
+    console.log('Datos cargados correctamente, generando HTML');
     
     return `
         <h2 class="mb-4">Nuevo Ingreso Técnico</h2>
         
-        <div class="card p-4 mb-4 bg-light">
-            <h5 class="mb-3">Buscar Cliente Existente</h5>
-            <div class="mb-3">
-                <input type="text" class="form-control" id="buscar_cliente" placeholder="Buscar por nombre, cédula o teléfono...">
-                <div id="resultadosBusqueda" class="list-group mt-2" style="display: none; max-height: 300px; overflow-y: auto;"></div>
-            </div>
-            <small class="text-muted">O ingrese los datos manualmente a continuación</small>
-        </div>
-        
-        <form id="ingresoForm" class="card p-4">
-            <div class="row">
-                <div class="col-md-6 mb-3">
-                    <label class="form-label">Nombre del Cliente *</label>
-                    <input type="text" class="form-control" id="cliente_nombre" required>
+        <div class="ingreso-wizard">
+            <!-- PASO 1: DATOS DEL CLIENTE -->
+            <div id="paso1" class="wizard-step active">
+                <div class="wizard-header">
+                    <span class="badge bg-primary">Paso 1</span>
+                    <h4 class="mb-0">Información del Cliente</h4>
                 </div>
-                <div class="col-md-6 mb-3">
-                    <label class="form-label">Apellido *</label>
-                    <input type="text" class="form-control" id="cliente_apellido" required>
+                
+                <div class="wizard-content">
+                    <!-- Buscador -->
+                    <div class="mb-4 search-section">
+                        <label class="form-label fw-bold">Buscar Cliente Existente</label>
+                        <input type="text" class="form-control form-control-lg" id="buscar_cliente" placeholder="Buscar por nombre, cédula o teléfono...">
+                        <div id="resultadosBusqueda" class="list-group mt-2" style="display: none; max-height: 300px; overflow-y: auto;"></div>
+                        <small class="text-muted d-block mt-2">O ingrese los datos manualmente</small>
+                    </div>
+                    
+                    <!-- Formulario Cliente -->
+                    <div class="row">
+                        <div class="col-12 col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Nombre del Cliente *</label>
+                                <input type="text" class="form-control form-control-lg" id="cliente_nombre" required>
+                            </div>
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Apellido *</label>
+                                <input type="text" class="form-control form-control-lg" id="cliente_apellido" required>
+                            </div>
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Cédula *</label>
+                                <input type="text" class="form-control form-control-lg" id="cliente_cedula" required>
+                            </div>
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Teléfono</label>
+                                <input type="tel" class="form-control form-control-lg" id="cliente_telefono">
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <div class="mb-4">
+                                <label class="form-label">Dirección</label>
+                                <input type="text" class="form-control form-control-lg" id="cliente_direccion">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <button type="button" class="btn btn-primary btn-lg w-100" onclick="nextWizardStep()">
+                        <i class="fas fa-arrow-right me-2"></i> Siguiente: Datos del Equipo
+                    </button>
                 </div>
             </div>
             
-            <div class="row">
-                <div class="col-md-6 mb-3">
-                    <label class="form-label">Cédula *</label>
-                    <input type="text" class="form-control" id="cliente_cedula" required>
+            <!-- PASO 2: DATOS DEL EQUIPO -->
+            <div id="paso2" class="wizard-step" style="display: none;">
+                <div class="wizard-header">
+                    <span class="badge bg-primary">Paso 2</span>
+                    <h4 class="mb-0">Datos del Equipo</h4>
                 </div>
-                <div class="col-md-6 mb-3">
-                    <label class="form-label">Teléfono</label>
-                    <input type="tel" class="form-control" id="cliente_telefono">
+                
+                <div class="wizard-content">
+                    <div class="row">
+                        <div class="col-12 col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Marca *</label>
+                                <select class="form-control form-control-lg" id="marca_id" required onchange="loadModelosByMarca()">
+                                    <option value="">Seleccione una marca</option>
+                                    ${Array.isArray(marcas) ? marcas.map(m => 
+                                        `<option value="${m.id}">${m.nombre}</option>`
+                                    ).join('') : ''}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Modelo *</label>
+                                <select class="form-control form-control-lg" id="modelo_id" required>
+                                    <option value="">Seleccione marca primero</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Color</label>
+                            <div class="color-palette mb-4">
+                                <button type="button" class="color-btn" style="background: #000000;" id="color_Negro" onclick="selectColor(this, 'Negro')" title="Negro"></button>
+                                <button type="button" class="color-btn" style="background: #FFFFFF; border: 2px solid #ccc;" id="color_Blanco" onclick="selectColor(this, 'Blanco')" title="Blanco"></button>
+                                <button type="button" class="color-btn" style="background: #C0C0C0;" id="color_Plateado" onclick="selectColor(this, 'Plateado')" title="Plateado"></button>
+                                <button type="button" class="color-btn" style="background: #FFD700;" id="color_Dorado" onclick="selectColor(this, 'Dorado')" title="Dorado"></button>
+                                <button type="button" class="color-btn" style="background: #FF0000;" id="color_Rojo" onclick="selectColor(this, 'Rojo')" title="Rojo"></button>
+                                <button type="button" class="color-btn" style="background: #0000FF;" id="color_Azul" onclick="selectColor(this, 'Azul')" title="Azul"></button>
+                                <button type="button" class="color-btn" style="background: #008000;" id="color_Verde" onclick="selectColor(this, 'Verde')" title="Verde"></button>
+                                <button type="button" class="color-btn" style="background: #800080;" id="color_Púrpura" onclick="selectColor(this, 'Púrpura')" title="Púrpura"></button>
+                                <button type="button" class="color-btn" style="background: #FFC0CB;" id="color_Rosa" onclick="selectColor(this, 'Rosa')" title="Rosa"></button>
+                                <button type="button" class="color-btn" style="background: #FFA500;" id="color_Naranja" onclick="selectColor(this, 'Naranja')" title="Naranja"></button>
+                                <button type="button" class="color-btn" style="background: #808080;" id="color_Gris" onclick="selectColor(this, 'Gris')" title="Gris"></button>
+                            </div>
+                            <input type="hidden" id="color">
+                        </div>
+                    </div>
+                    
+                    <div class="wizard-nav mt-4">
+                        <button type="button" class="btn btn-secondary btn-lg me-2" onclick="prevWizardStep()">
+                            <i class="fas fa-arrow-left me-2"></i> Anterior
+                        </button>
+                        <button type="button" class="btn btn-primary btn-lg flex-grow-1" onclick="nextWizardStep()">
+                            <i class="fas fa-arrow-right me-2"></i> Siguiente: Estado del Equipo
+                        </button>
+                    </div>
                 </div>
             </div>
             
-            <div class="mb-3">
-                <label class="form-label">Dirección</label>
-                <input type="text" class="form-control" id="cliente_direccion">
-            </div>
-            
-            <hr class="my-4">
-            
-            <h5 class="mb-3">Datos del Celular</h5>
-            
-            <div class="row">
-                <div class="col-md-6 mb-3">
-                    <label class="form-label">Marca *</label>
-                    <select class="form-control" id="marca_id" required onchange="loadModelosByMarca()">
-                        <option value="">Seleccione una marca</option>
-                        ${Array.isArray(marcas) ? marcas.map(m => 
-                            `<option value="${m.id}">${m.nombre}</option>`
+            <!-- PASO 3: ESTADO Y FALLAS -->
+            <div id="paso3" class="wizard-step" style="display: none;">
+                <div class="wizard-header">
+                    <span class="badge bg-primary">Paso 3</span>
+                    <h4 class="mb-0">Estado y Fallas del Equipo</h4>
+                </div>
+                
+                <div class="wizard-content">
+                    <h5 class="mb-3">Estado Físico</h5>
+                    <div class="row mb-3">
+                        <div class="col-12 col-md-6 form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="estado_display">
+                            <label class="form-check-label" for="estado_display">
+                                Display Malo
+                            </label>
+                        </div>
+                        <div class="col-12 col-md-6 form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="estado_tactil">
+                            <label class="form-check-label" for="estado_tactil">
+                                Táctil Malo
+                            </label>
+                        </div>
+                        <div class="col-12 col-md-6 form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="estado_botones">
+                            <label class="form-check-label" for="estado_botones">
+                                Botones Dañados
+                            </label>
+                        </div>
+                        <div class="col-12 col-md-6 form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="estado_apagado">
+                            <label class="form-check-label" for="estado_apagado">
+                                Apagado / No Enciende
+                            </label>
+                        </div>
+                        <div class="col-12 col-md-6 form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="tiene_clave" onchange="toggleClave()">
+                            <label class="form-check-label" for="tiene_clave">
+                                Tiene Clave
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-4" id="claveDiv" style="display: none;">
+                        <label class="form-label">Clave del Equipo</label>
+                        <input type="password" class="form-control form-control-lg" id="clave" placeholder="Ingrese la clave">
+                    </div>
+                    
+                    <h5 class="mb-3">Fallas Reportadas</h5>
+                    <div class="row mb-3" id="fallasCheckbox">
+                        ${Array.isArray(fallas) ? fallas.map(f => 
+                            `<div class="col-12 col-md-6 form-check mb-2">
+                                <input class="form-check-input falla-checkbox" type="checkbox" value="${f.id}" id="falla_${f.id}">
+                                <label class="form-check-label" for="falla_${f.id}">
+                                    ${f.nombre}
+                                </label>
+                            </div>`
                         ).join('') : ''}
-                    </select>
-                </div>
-                <div class="col-md-6 mb-3">
-                    <label class="form-label">Modelo *</label>
-                    <select class="form-control" id="modelo_id" required>
-                        <option value="">Seleccione marca primero</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="mb-3">
-                <label class="form-label">Color</label>
-                <select class="form-control" id="color">
-                    <option value="">Seleccione un color</option>
-                    <option value="Negro">Negro</option>
-                    <option value="Blanco">Blanco</option>
-                    <option value="Plateado">Plateado</option>
-                    <option value="Dorado">Dorado</option>
-                    <option value="Rojo">Rojo</option>
-                    <option value="Azul">Azul</option>
-                    <option value="Verde">Verde</option>
-                    <option value="Púrpura">Púrpura</option>
-                    <option value="Rosa">Rosa</option>
-                    <option value="Naranja">Naranja</option>
-                    <option value="Gris">Gris</option>
-                    <option value="Otro">Otro</option>
-                </select>
-            </div>
-            
-            <hr class="my-4">
-            
-            <h5 class="mb-3">Estado del Equipo</h5>
-            
-            <div class="row">
-                <div class="col-md-6 mb-3">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="estado_display">
-                        <label class="form-check-label" for="estado_display">
-                            Display Malo
-                        </label>
                     </div>
-                </div>
-                <div class="col-md-6 mb-3">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="estado_tactil">
-                        <label class="form-check-label" for="estado_tactil">
-                            Táctil Malo
-                        </label>
+                    
+                    <div class="wizard-nav">
+                        <button type="button" class="btn btn-secondary btn-lg me-2" onclick="prevWizardStep()">
+                            <i class="fas fa-arrow-left me-2"></i> Anterior
+                        </button>
+                        <button type="button" class="btn btn-primary btn-lg flex-grow-1" onclick="nextWizardStep()">
+                            <i class="fas fa-arrow-right me-2"></i> Siguiente: Resumen
+                        </button>
                     </div>
                 </div>
             </div>
             
-            <div class="row">
-                <div class="col-md-6 mb-3">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="estado_botones">
-                        <label class="form-check-label" for="estado_botones">
-                            Botones Dañados
-                        </label>
+            <!-- PASO 4: RESUMEN -->
+            <div id="paso4" class="wizard-step" style="display: none;">
+                <div class="wizard-header">
+                    <span class="badge bg-primary">Paso 4</span>
+                    <h4 class="mb-0">Descripción y Resumen</h4>
+                </div>
+                
+                <div class="wizard-content">
+                    <div class="mb-4">
+                        <label class="form-label">Falla General *</label>
+                        <textarea class="form-control form-control-lg" id="falla_general" rows="3" placeholder="Descripción de la falla reportada" required></textarea>
                     </div>
-                </div>
-                <div class="col-md-6 mb-3">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="estado_apagado">
-                        <label class="form-check-label" for="estado_apagado">
-                            Apagado / No Enciende
-                        </label>
+                    
+                    <div class="mb-4">
+                        <label class="form-label">Valor de Reparación</label>
+                        <div class="input-group input-group-lg">
+                            <span class="input-group-text">$</span>
+                            <input type="number" class="form-control" id="valor_reparacion" placeholder="0" min="0" step="1000">
+                        </div>
+                        <small class="text-muted">Dejar vacío para asignar después</small>
                     </div>
-                </div>
-            </div>
-            
-            <div class="row mb-3">
-                <div class="col-md-6">
-                    <div class="form-check">
-                        <input class="form-check-input" type="checkbox" id="tiene_clave" 
-                               onchange="toggleClave()">
-                        <label class="form-check-label" for="tiene_clave">
-                            Tiene Clave
-                        </label>
+                    
+                    <div class="mb-4">
+                        <label class="form-label">Notas Adicionales</label>
+                        <textarea class="form-control form-control-lg" id="notas_adicionales" rows="2" placeholder="Notas internas o adicionales"></textarea>
                     </div>
-                </div>
-                <div class="col-md-6" id="claveDiv" style="display: none;">
-                    <input type="password" class="form-control" id="clave" placeholder="Ingrese la clave">
-                </div>
-            </div>
-            
-            <hr class="my-4">
-            
-            <h5 class="mb-3">Fallas Iniciales</h5>
-            
-            <div class="mb-3" id="fallasCheckbox">
-                ${Array.isArray(fallas) ? fallas.map(f => 
-                    `<div class="form-check">
-                        <input class="form-check-input falla-checkbox" type="checkbox" 
-                               value="${f.id}" id="falla_${f.id}">
-                        <label class="form-check-label" for="falla_${f.id}">
-                            ${f.nombre}
-                        </label>
-                    </div>`
-                ).join('') : ''}
-            </div>
-            
-            <hr class="my-4">
-            
-            <h5 class="mb-3">Falla General y Notas</h5>
-            
-            <div class="mb-3">
-                <label class="form-label">Falla General *</label>
-                <textarea class="form-control" id="falla_general" rows="3" 
-                          placeholder="Descripción de la falla reportada" required></textarea>
-            </div>
-            
-            <div class="row">
-                <div class="col-md-6 mb-3">
-                    <label class="form-label">Valor de Reparación</label>
-                    <div class="input-group">
-                        <span class="input-group-text">$</span>
-                        <input type="number" class="form-control" id="valor_reparacion" 
-                               placeholder="0" min="0" step="1000">
-                    </div>
-                    <small class="text-muted">Dejar vacío para asignar después</small>
+                    
+                    <form id="ingresoForm" onsubmit="submitIngreso(event); return false;">
+                        <div class="wizard-nav">
+                            <button type="button" class="btn btn-secondary btn-lg me-2" onclick="prevWizardStep()">
+                                <i class="fas fa-arrow-left me-2"></i> Anterior
+                            </button>
+                            <button type="submit" class="btn btn-success btn-lg flex-grow-1">
+                                <i class="fas fa-check me-2"></i> Crear Ingreso
+                            </button>
+                        </div>
+                    </form>
                 </div>
             </div>
-            
-            <div class="mb-3">
-                <label class="form-label">Notas Adicionales</label>
-                <textarea class="form-control" id="notas_adicionales" rows="2" 
-                          placeholder="Notas internas o adicionales"></textarea>
-            </div>
-            
-            <button type="submit" class="btn btn-primary btn-lg w-100">
-                <i class="fas fa-save me-2"></i> Crear Ingreso
-            </button>
-        </form>
+        </div>
     `;
 }
 
@@ -718,7 +849,18 @@ async function buscarClientes() {
             return;
         }
         
-        resultados.innerHTML = response.data.map(cliente => `
+        // Filtrar duplicados por cédula
+        const clientesUnicos = new Map();
+        response.data.forEach(cliente => {
+            const key = cliente.cedula;
+            if (!clientesUnicos.has(key)) {
+                clientesUnicos.set(key, cliente);
+            }
+        });
+        
+        const clientesFiltrados = Array.from(clientesUnicos.values());
+        
+        resultados.innerHTML = clientesFiltrados.map(cliente => `
             <button type="button" class="list-group-item list-group-item-action" 
                     onclick="seleccionarCliente('${cliente.nombre}', '${cliente.apellido}', '${cliente.cedula}', '${cliente.telefono || ''}', '${cliente.direccion || ''}')">
                 <div class="d-flex w-100 justify-content-between">
@@ -776,7 +918,10 @@ async function loadModelosByMarca() {
 
 async function submitIngreso(e) {
     e.preventDefault();
-    console.log('DEBUG: submitIngreso iniciado');
+    if (isSubmittingIngreso) {
+        return;
+    }
+    isSubmittingIngreso = true;
     
     const fallasSeleccionadas = Array.from(document.querySelectorAll('.falla-checkbox:checked'))
         .map(cb => parseInt(cb.value));
@@ -810,38 +955,32 @@ async function submitIngreso(e) {
     if (!datos.marca_id || !datos.modelo_id || !datos.cliente_nombre || 
         !datos.cliente_apellido || !datos.cliente_cedula) {
         showAlert('Por favor complete todos los campos requeridos (Marca, Modelo, Nombre, Apellido, Cédula)', 'danger');
+        isSubmittingIngreso = false;
         return;
     }
     
-    console.log('DEBUG: Validación pasada, mostrando loading...');
     showLoading(true);
     
     try {
-        console.log('DEBUG: Enviando ingreso al servidor...');
         const response = await apiCall('/ingresos', {
             method: 'POST',
             body: JSON.stringify(datos)
         });
         
-        console.log('DEBUG: Respuesta recibida, ocultando loading...', response);
         showLoading(false);
-        console.log('DEBUG: Loading ocultado');
         
         if (!response) {
-            console.log('DEBUG: Response es null/undefined');
             showAlert('Error de conexión con el servidor', 'danger');
             return;
         }
         
         if (response.error) {
-            console.log('DEBUG: Response tiene error:', response.error);
             showAlert('Error: ' + response.error, 'danger');
             return;
         }
         
         if (response.numero_ingreso || response.id) {
             const numeroIngreso = response.numero_ingreso || response.id;
-            console.log('DEBUG: Ingreso creado, número:', numeroIngreso);
             showAlert(`¡Ingreso creado exitosamente! Número: ${numeroIngreso}`, 'success');
             document.getElementById('ingresoForm').reset();
 
@@ -850,27 +989,25 @@ async function submitIngreso(e) {
             }
             
             // Esperar a que desaparezca la alerta y luego ir a registros
-            console.log('DEBUG: Esperando 1.5 segundos antes de cargar registros...');
             setTimeout(() => {
-                console.log('DEBUG: Llamando a loadPage(registros)...');
                 loadPage('registros');
             }, 1500);
         } else {
-            console.log('DEBUG: Respuesta sin número de ingreso:', response);
             showAlert('Error: Respuesta inesperada del servidor', 'danger');
         }
     } catch (error) {
-        console.error('DEBUG: Error en submitIngreso:', error);
+        console.error('Error en submitIngreso:', error);
         showLoading(false);
         showAlert('Error al crear ingreso: ' + error.message, 'danger');
+    } finally {
+        isSubmittingIngreso = false;
     }
 }
 
 async function loadRegistros() {
+    const user = getCurrentUserSafe();
     const page = 1;
     const response = await apiCall(`/ingresos?page=${page}&limit=20`);
-    
-    console.log('DEBUG: Respuesta loadRegistros:', response);
     
     if (!response) {
         return '<div class="alert alert-danger">Error: No se pudo conectar con el servidor</div>';
@@ -959,7 +1096,7 @@ async function loadRegistros() {
                                             onclick="verDetalles(${ingreso.id})">
                                         <i class="fas fa-eye"></i>
                                     </button>
-                                    ${currentUser && currentUser.rol === 'admin' ? `
+                                    ${user && user.rol === 'admin' ? `
                                         <button class="btn btn-sm btn-danger" 
                                                 onclick="deleteIngreso(${ingreso.id})">
                                             <i class="fas fa-trash"></i>
@@ -1002,6 +1139,9 @@ async function loadTecnicoPanel() {
     
     return `
         <h2 class="mb-4">Panel Técnico - Gestión de Reparaciones</h2>
+        <div class="alert alert-light border mb-3 py-2">
+            <small><strong>Flujo:</strong> Pendiente → En Reparación → Reparado/No Reparable → Entregado</small>
+        </div>
         
         <ul class="nav nav-tabs mb-4" role="tablist">
             <li class="nav-item">
@@ -1017,6 +1157,11 @@ async function loadTecnicoPanel() {
             <li class="nav-item">
                 <a class="nav-link" data-bs-toggle="tab" href="#reparados">
                     <i class="fas fa-check me-2"></i> Reparados
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link" data-bs-toggle="tab" href="#no-reparables">
+                    <i class="fas fa-ban me-2"></i> No Reparables
                 </a>
             </li>
             <li class="nav-item">
@@ -1036,6 +1181,9 @@ async function loadTecnicoPanel() {
             <div id="reparados" class="tab-pane fade">
                 ${renderIngresosPorEstado(ingresos, 'reparado')}
             </div>
+            <div id="no-reparables" class="tab-pane fade">
+                ${renderIngresosPorEstado(ingresos, 'no_reparable')}
+            </div>
             <div id="entregados" class="tab-pane fade">
                 ${renderIngresosEntregadosEnLista(ingresos)}
             </div>
@@ -1049,7 +1197,7 @@ function renderIngresosPorEstado(ingresos, estado) {
     return `
         <div class="row">
             ${filtrados.length > 0 ? filtrados.map(ingreso => `
-                <div class="col-md-6 mb-4">
+                <div class="col-12 mb-4">
                     <div class="card">
                         <div class="card-header bg-primary text-white">
                             <h5 class="mb-0">${ingreso.numero_ingreso}</h5>
@@ -1066,16 +1214,10 @@ function renderIngresosPorEstado(ingresos, estado) {
                             <p><strong>Fecha y Hora de Ingreso:</strong> ${(() => { const d = new Date(ingreso.fecha_ingreso); const hh = String(d.getHours()).padStart(2, '0'); const mm = String(d.getMinutes()).padStart(2, '0'); return d.toLocaleDateString('es-ES') + ' ' + hh + ':' + mm; })()}</p>
                             ${ingreso.notas ? `<p><strong>Notas:</strong> ${ingreso.notas}</p>` : ''}
                             <div class="mt-3">
-                                <label class="form-label">Cambiar Estado:</label>
-                                <select class="form-select form-select-sm" onchange="cambiarEstadoIngreso(${ingreso.id}, this.value)">
-                                    <option value="${ingreso.estado_ingreso}" selected>-- Seleccione --</option>
-                                    <option value="pendiente">Pendiente</option>
-                                    <option value="en_reparacion">En Reparación</option>
-                                    <option value="reparado">Reparado</option>
-                                    <option value="no_reparable">No Reparable</option>
-                                    <option value="entregado">Entregado</option>
-                                    <option value="cancelado">Cancelado</option>
-                                </select>
+                                <label class="form-label mb-2">Acciones disponibles:</label>
+                                <div class="d-flex flex-wrap gap-2">
+                                    ${getTecnicoEstadoActionButtons(ingreso.id, ingreso.estado_ingreso)}
+                                </div>
                             </div>
                             <button class="btn btn-sm btn-info w-100 mt-2" onclick="verDetallesTecnico(${ingreso.id})">
                                 Ver Detalles Completos
@@ -1086,6 +1228,44 @@ function renderIngresosPorEstado(ingresos, estado) {
             `).join('') : '<div class="col-12"><div class="alert alert-info">No hay ingresos en este estado</div></div>'}
         </div>
     `;
+}
+
+function getTecnicoEstadoActionButtons(ingresoId, estadoActual) {
+    const transiciones = {
+        pendiente: ['en_reparacion', 'no_reparable'],
+        en_reparacion: ['reparado', 'no_reparable', 'pendiente'],
+        reparado: ['entregado', 'en_reparacion'],
+        no_reparable: ['entregado', 'en_reparacion']
+    };
+
+    const labels = {
+        pendiente: 'Pendiente',
+        en_reparacion: 'En Reparación',
+        reparado: 'Reparado',
+        no_reparable: 'No Reparable',
+        entregado: 'Entregado'
+    };
+
+    const styles = {
+        pendiente: 'btn-outline-secondary',
+        en_reparacion: 'btn-outline-primary',
+        reparado: 'btn-outline-success',
+        no_reparable: 'btn-outline-dark',
+        entregado: 'btn-success'
+    };
+
+    const opciones = transiciones[estadoActual] || [];
+    if (opciones.length === 0) {
+        return '<span class="text-muted small">Sin acciones disponibles</span>';
+    }
+
+    return opciones
+        .map((estado) => `
+            <button type="button" class="btn btn-sm ${styles[estado] || 'btn-outline-secondary'}" onclick="cambiarEstadoIngreso(${ingresoId}, '${estado}')">
+                ${labels[estado] || estado}
+            </button>
+        `)
+        .join('');
 }
 
 function renderIngresosEntregadosEnLista(ingresos) {
@@ -1171,7 +1351,7 @@ function renderIngresosEntregadosEnLista(ingresos) {
 }
 
 async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
-    if (!nuevoEstado || nuevoEstado === '-- Seleccione --') return;
+    if (!nuevoEstado) return;
     
     // Si el estado es "entregado", mostrar modal de confirmación con valor
     if (nuevoEstado === 'entregado') {
@@ -1371,46 +1551,46 @@ async function loadAdminPanel() {
         
         <ul class="nav nav-tabs mb-4" role="tablist">
             <li class="nav-item">
-                <a class="nav-link active" data-bs-toggle="tab" href="#usuarios">
+                <a class="nav-link ${adminActiveTab === 'usuarios' ? 'active' : ''}" data-bs-toggle="tab" href="#usuarios">
                     <i class="fas fa-users me-2"></i> Usuarios
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" data-bs-toggle="tab" href="#clientes">
+                <a class="nav-link ${adminActiveTab === 'clientes' ? 'active' : ''}" data-bs-toggle="tab" href="#clientes">
                     <i class="fas fa-address-book me-2"></i> Base de Clientes
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" data-bs-toggle="tab" href="#marcas">
+                <a class="nav-link ${adminActiveTab === 'marcas' ? 'active' : ''}" data-bs-toggle="tab" href="#marcas">
                     <i class="fas fa-mobile-alt me-2"></i> Marcas y Modelos
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" data-bs-toggle="tab" href="#fallas">
+                <a class="nav-link ${adminActiveTab === 'fallas' ? 'active' : ''}" data-bs-toggle="tab" href="#fallas">
                     <i class="fas fa-tools me-2"></i> Fallas
                 </a>
             </li>
             <li class="nav-item">
-                <a class="nav-link" data-bs-toggle="tab" href="#config">
+                <a class="nav-link ${adminActiveTab === 'config' ? 'active' : ''}" data-bs-toggle="tab" href="#config">
                     <i class="fas fa-cog me-2"></i> Configuración
                 </a>
             </li>
         </ul>
         
         <div class="tab-content">
-            <div id="usuarios" class="tab-pane fade show active">
+            <div id="usuarios" class="tab-pane fade ${adminActiveTab === 'usuarios' ? 'show active' : ''}">
                 ${await loadAdminUsuarios()}
             </div>
-            <div id="clientes" class="tab-pane fade">
+            <div id="clientes" class="tab-pane fade ${adminActiveTab === 'clientes' ? 'show active' : ''}">
                 ${await loadAdminClientes()}
             </div>
-            <div id="marcas" class="tab-pane fade">
+            <div id="marcas" class="tab-pane fade ${adminActiveTab === 'marcas' ? 'show active' : ''}">
                 ${await loadAdminMarcas()}
             </div>
-            <div id="fallas" class="tab-pane fade">
+            <div id="fallas" class="tab-pane fade ${adminActiveTab === 'fallas' ? 'show active' : ''}">
                 ${await loadAdminFallas()}
             </div>
-            <div id="config" class="tab-pane fade">
+            <div id="config" class="tab-pane fade ${adminActiveTab === 'config' ? 'show active' : ''}">
                 ${await loadAdminConfig()}
             </div>
         </div>
@@ -2187,7 +2367,64 @@ function getStatusColor(estado) {
     return colors[estado] || 'secondary';
 }
 
+function showConfirmModal(message, options = {}) {
+    const {
+        title = 'Confirmar acción',
+        confirmText = 'Eliminar',
+        cancelText = 'Cancelar',
+        confirmClass = 'btn-danger'
+    } = options;
+
+    return new Promise((resolve) => {
+        const modalId = `confirmModal_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.id = modalId;
+        modal.tabIndex = -1;
+        modal.setAttribute('aria-hidden', 'true');
+
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">${title}</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                    </div>
+                    <div class="modal-body">
+                        <p class="mb-0">${message}</p>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${cancelText}</button>
+                        <button type="button" class="btn ${confirmClass}" id="${modalId}_confirm">${confirmText}</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        let confirmed = false;
+
+        modal.querySelector(`#${modalId}_confirm`).addEventListener('click', () => {
+            confirmed = true;
+            bsModal.hide();
+        });
+
+        modal.addEventListener('hidden.bs.modal', () => {
+            modal.remove();
+            resolve(confirmed);
+        }, { once: true });
+
+        bsModal.show();
+    });
+}
+
 async function printTicket(ingresoId) {
+    if (printingIngresos.has(ingresoId)) {
+        return;
+    }
+    printingIngresos.add(ingresoId);
+
     try {
         showAlert('Generando ticket de impresión...', 'info');
         
@@ -2203,29 +2440,24 @@ async function printTicket(ingresoId) {
             return;
         }
         
-        // Abrir siempre vista previa 58mm inmediatamente
         simulatePrint(response);
         
     } catch (error) {
         console.error('Error en printTicket:', error);
         showAlert('Error al generar ticket: ' + error.message, 'danger');
+    } finally {
+        printingIngresos.delete(ingresoId);
     }
 }
 
-// Función auxiliar para simular impresión (muestra contenido en ventana nueva)
+// Función auxiliar para imprimir ticket en iframe oculto (sin popup)
 function simulatePrint(ticketData) {
-    // Mostrar alerta que la impresión se ha simulado
-    showAlert('[WARNING] Impresora no disponible. Mostrando vista previa...', 'warning');
-    
-    // Crear ventana con vista previa del ticket
-    const win = window.open('', '_blank', 'width=300,height=600');
-    
     const ingreso = ticketData.ingreso || {};
     const negocio = ticketData.negocio || {};
     const nombreNegocio = negocio.nombre_negocio || 'CELUPRO';
     const telefonoNegocio = negocio.telefono_negocio || '';
     const direccionNegocio = negocio.direccion_negocio || negocio.email_negocio || '';
-    // Convertir URL relativa del logo a absoluta para que funcione en window.open
+    // Convertir URL relativa del logo a absoluta para que funcione en iframe
     const logoUrl = negocio.logo_url ? `${window.location.origin}${negocio.logo_url}` : '';
     const valorTotal = Number(ingreso.valor_total || 0);
     const fallas = Array.isArray(ingreso.fallas) ? ingreso.fallas : [];
@@ -2233,7 +2465,7 @@ function simulatePrint(ticketData) {
         ? fallas.map(f => `• ${f.nombre || 'Falla'}${f.valor_reparacion ? ` ($ ${Number(f.valor_reparacion).toLocaleString('es-CO')})` : ''}`).join('<br>')
         : (ingreso.falla_general || 'Sin detalle');
 
-    win.document.write(`
+    const html = `
         <html>
         <head>
             <title>Ticket de Impresión - ${ticketData.numero_ingreso}</title>
@@ -2289,7 +2521,7 @@ function simulatePrint(ticketData) {
         </head>
         <body>
             <div class="ticket">
-                ${logoUrl ? `<div class="logo"><img src="${logoUrl}" alt="Logo"></div>` : ''}
+                ${logoUrl ? `<div class="logo"><img id="ticket-logo" src="${logoUrl}" alt="Logo"></div>` : ''}
                 <div class="header">${nombreNegocio}</div>
                 ${telefonoNegocio ? `<div class="center small">Tel: ${telefonoNegocio}</div>` : ''}
                 ${direccionNegocio ? `<div class="center small">${direccionNegocio}</div>` : ''}
@@ -2321,18 +2553,79 @@ function simulatePrint(ticketData) {
                 <div class="line"></div>
                 <div class="small">Impresión: ${new Date().toLocaleString('es-CO')}</div>
                 <div class="small">Firma técnico: __________________</div>
-                </div>
-            <script>
-                window.print();
-            </script>
+            </div>
         </body>
         </html>
-    `);
+    `;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(iframe);
+
+    const cleanup = () => {
+        setTimeout(() => {
+            if (iframe && iframe.parentNode) {
+                iframe.parentNode.removeChild(iframe);
+            }
+        }, 1000);
+    };
+
+    const doPrint = () => {
+        const printWindow = iframe.contentWindow;
+        if (!printWindow) {
+            cleanup();
+            showAlert('No se pudo abrir el diálogo de impresión', 'danger');
+            return;
+        }
+
+        try {
+            printWindow.focus();
+            printWindow.print();
+        } finally {
+            cleanup();
+        }
+    };
+
+    iframe.onload = () => {
+        const doc = iframe.contentDocument;
+        if (!doc) {
+            doPrint();
+            return;
+        }
+
+        const logo = doc.getElementById('ticket-logo');
+        let printed = false;
+        const printOnce = () => {
+            if (printed) return;
+            printed = true;
+            setTimeout(doPrint, 100);
+        };
+
+        if (logo) {
+            if (logo.complete) {
+                printOnce();
+            } else {
+                logo.addEventListener('load', printOnce, { once: true });
+                logo.addEventListener('error', printOnce, { once: true });
+                setTimeout(printOnce, 2500);
+            }
+        } else {
+            printOnce();
+        }
+    };
+
+    iframe.srcdoc = html;
 }
 
 // Función para eliminar ingreso (solo admin)
 async function deleteIngreso(ingresoId) {
-    if (!confirm('¿Estás seguro de que deseas eliminar este ingreso? Esta acción no se puede deshacer.')) {
+    if (!await showConfirmModal('¿Estás seguro de que deseas eliminar este ingreso? Esta acción no se puede deshacer.')) {
         return;
     }
     
@@ -2460,7 +2753,7 @@ async function editMarcaName(marcaId) {
 
 // Función para eliminar marca
 async function deleteMarca(marcaId) {
-    if (!confirm('¿Estás seguro de que deseas eliminar esta marca?')) {
+    if (!await showConfirmModal('¿Estás seguro de que deseas eliminar esta marca?')) {
         return;
     }
     
@@ -2478,7 +2771,7 @@ async function deleteMarca(marcaId) {
 
 // Función para eliminar modelo
 async function deleteModelo(modeloId) {
-    if (!confirm('¿Estás seguro de que deseas eliminar este modelo?')) {
+    if (!await showConfirmModal('¿Estás seguro de que deseas eliminar este modelo?')) {
         return;
     }
     
@@ -2569,7 +2862,7 @@ async function editFalla(fallaId) {
 
 // Función para eliminar falla
 async function deleteFalla(fallaId) {
-    if (!confirm('¿Estás seguro de que deseas eliminar esta falla? Esta acción no se puede deshacer.')) {
+    if (!await showConfirmModal('¿Estás seguro de que deseas eliminar esta falla? Esta acción no se puede deshacer.')) {
         return;
     }
     
@@ -2704,7 +2997,10 @@ async function updateEstado(ingresoFallaId, nuevoEstado) {
 
 // Función para remover falla de un ingreso
 async function removeFalla(ingresoId, fallaId) {
-    if (!confirm('¿Estás seguro de que deseas remover esta falla del ingreso?')) {
+    if (!await showConfirmModal('¿Estás seguro de que deseas remover esta falla del ingreso?', {
+        title: 'Confirmar remoción',
+        confirmText: 'Remover'
+    })) {
         return;
     }
     
@@ -2799,7 +3095,7 @@ async function submitNewUser(event) {
 }
 
 async function deleteUser(id, nombre) {
-    if (!confirm(`¿Eliminar el usuario "${nombre}"?`)) return;
+    if (!await showConfirmModal(`¿Eliminar el usuario "${nombre}"?`)) return;
     
     try {
         const response = await apiCall(`/admin/usuarios/${id}`, {
@@ -2861,7 +3157,7 @@ async function submitNewMarca(event) {
 }
 
 async function deleteMarca(id, nombre) {
-    if (!confirm(`¿Eliminar la marca "${nombre}"?`)) return;
+    if (!await showConfirmModal(`¿Eliminar la marca "${nombre}"?`)) return;
     
     try {
         const response = await apiCall(`/marcas/${id}`, {
@@ -2952,7 +3248,7 @@ async function submitNewModelo(event) {
 }
 
 async function deleteModelo(id, nombre) {
-    if (!confirm(`¿Eliminar el modelo "${nombre}"?`)) return;
+    if (!await showConfirmModal(`¿Eliminar el modelo "${nombre}"?`)) return;
     
     try {
         const response = await apiCall(`/modelos/${id}`, {
@@ -3020,7 +3316,7 @@ async function submitNewFalla(event) {
 }
 
 async function deleteFalla(id, nombre) {
-    if (!confirm(`¿Eliminar la falla "${nombre}"?`)) return;
+    if (!await showConfirmModal(`¿Eliminar la falla "${nombre}"?`)) return;
     
     try {
         const response = await apiCall(`/fallas/${id}`, {
@@ -3256,7 +3552,7 @@ async function editUser(userId) {
 
 // Función para eliminar usuario
 async function deleteUser(userId) {
-    if (!confirm('¿Estás seguro de que deseas eliminar este usuario?')) {
+    if (!await showConfirmModal('¿Estás seguro de que deseas eliminar este usuario?')) {
         return;
     }
     
@@ -3398,22 +3694,83 @@ async function submitQuickNewUser(event) {
     }
 }
 
-async function deleteUserFromModal(id, nombre) {
-    if (!confirm(`¿Eliminar el usuario "${nombre}"?`)) return;
-    
-    try {
-        const response = await apiCall(`/admin/usuarios/${id}`, {
-            method: 'DELETE'
-        });
+// ===== WIZARD FUNCTIONS =====
+let currentWizardStep = 1;
+
+function nextWizardStep() {
+    if (currentWizardStep === 1) {
+        // Validar paso 1: Datos del cliente
+        const nombre = document.getElementById('cliente_nombre')?.value.trim();
+        const apellido = document.getElementById('cliente_apellido')?.value.trim();
+        const cedula = document.getElementById('cliente_cedula')?.value.trim();
         
-        if (response && response.success) {
-            showAlert(`Usuario "${nombre}" eliminado`, 'success');
-            openAdminUsersModal();
-        } else {
-            showAlert(response?.error || 'Error al eliminar usuario', 'danger');
+        if (!nombre || !apellido || !cedula) {
+            showAlert('Por favor complete los datos requeridos del cliente (Nombre, Apellido, Cédula)', 'warning');
+            return;
+        }
+        currentWizardStep = 2;
+    } else if (currentWizardStep === 2) {
+        // Validar paso 2: Datos del equipo
+        const marca = document.getElementById('marca_id')?.value;
+        const modelo = document.getElementById('modelo_id')?.value;
+        
+        if (!marca || !modelo) {
+            showAlert('Por favor seleccione Marca y Modelo', 'warning');
+            return;
+        }
+        currentWizardStep = 3;
+    } else if (currentWizardStep === 3) {
+        currentWizardStep = 4;
+    }
+    
+    updateWizardDisplay();
+}
+
+function prevWizardStep() {
+    if (currentWizardStep > 1) {
+        currentWizardStep--;
+        updateWizardDisplay();
+    }
+}
+
+function updateWizardDisplay() {
+    try {
+        // Ocultar todos los pasos
+        const paso1 = document.getElementById('paso1');
+        const paso2 = document.getElementById('paso2');
+        const paso3 = document.getElementById('paso3');
+        const paso4 = document.getElementById('paso4');
+        
+        if (!paso1 || !paso2 || !paso3 || !paso4) {
+            console.error('Paso elements not found:', {paso1, paso2, paso3, paso4});
+            return;
+        }
+        
+        paso1.style.display = 'none';
+        paso2.style.display = 'none';
+        paso3.style.display = 'none';
+        paso4.style.display = 'none';
+        
+        // Mostrar el paso actual
+        document.getElementById(`paso${currentWizardStep}`).style.display = 'block';
+        
+        // Scroll hacia arriba
+        const wizard = document.querySelector('.ingreso-wizard');
+        if (wizard) {
+            wizard.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
     } catch (error) {
-        console.error('Error al eliminar usuario:', error);
-        showAlert('Error al conectar con el servidor', 'danger');
+        console.error('Error in updateWizardDisplay:', error);
     }
+}
+
+function selectColor(btn, colorName) {
+    // Remover selección anterior
+    document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('selected'));
+    
+    // Agregar selección al botón clickeado
+    btn.classList.add('selected');
+    
+    // Guardar valor en el input hidden
+    document.getElementById('color').value = colorName;
 }

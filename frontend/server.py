@@ -3,7 +3,6 @@ Servidor para servir archivos estáticos del frontend con proxy a backend
 """
 from flask import Flask, render_template, send_from_directory, request, jsonify
 import requests
-import os
 import time
 import sys
 from pathlib import Path
@@ -11,11 +10,6 @@ from pathlib import Path
 # Asegurar que Flask encuentra los templates
 TEMPLATE_DIR = str(Path(__file__).parent / 'templates')
 STATIC_DIR = str(Path(__file__).parent / 'static')
-
-print(f"DEBUG: TEMPLATE_DIR = {TEMPLATE_DIR}")
-print(f"DEBUG: STATIC_DIR = {STATIC_DIR}")
-print(f"DEBUG: Templates exist: {os.path.exists(TEMPLATE_DIR)}")
-print(f"DEBUG: Static exists: {os.path.exists(STATIC_DIR)}")
 
 app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 
@@ -61,20 +55,12 @@ def proxy_api(path):
         if key.lower() not in ['host', 'content-length']:
             headers[key] = value
     
-    print(f"DEBUG PROXY: {request.method} {path}")
-    print(f"  URL: {url}")
-    print(f"  Content-Type: {request.content_type}")
-    print(f"  Headers: {dict(headers)}")
-    print(f"  Files: {list(request.files.keys())}")
-    print(f"  Form: {list(request.form.keys())}")
-    
     try:
         if request.method == 'GET':
             resp = requests.get(url, headers=headers, params=request.args, timeout=30)
         elif request.method == 'POST':
             # Si hay archivos, enviarlos como multipart/form-data
             if request.files:
-                print(f"  -> Enviando archivos: {list(request.files.keys())}")
                 files = {}
                 for key in request.files:
                     file = request.files[key]
@@ -100,8 +86,6 @@ def proxy_api(path):
         else:
             return jsonify({'error': 'Método no permitido'}), 405
         
-        print(f"  Response: {resp.status_code}")
-        
         # Retornar respuesta preservando el Content-Type
         response_headers = {'Content-Type': resp.headers.get('Content-Type', 'application/json')}
         
@@ -114,12 +98,10 @@ def proxy_api(path):
         else:
             return resp.content, resp.status_code, response_headers
     except requests.exceptions.RequestException as e:
-        print(f"  ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Backend connection error: {str(e)}'}), 503
     except Exception as e:
-        print(f"  UNEXPECTED ERROR: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Unexpected error: {str(e)}'}), 500

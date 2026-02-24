@@ -3,29 +3,19 @@ const API_BASE = '/api';
 let currentUser = null;
 let token = null;
 
-console.log('auth.js cargado correctamente');
-
 // ===== MANEJO DE AUTENTICACIÓN =====
 function initAuth() {
-    console.log('initAuth() ejecutándose');
     const loginForm = document.getElementById('loginForm');
     if (loginForm) {
-        console.log('loginForm encontrado, agregando event listener');
         loginForm.addEventListener('submit', handleLogin);
-    } else {
-        console.log('loginForm NO encontrado - probablemente en dashboard');
     }
     
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) {
-        console.log('logoutBtn encontrado, agregando event listener');
         logoutBtn.addEventListener('click', handleLogout);
     }
     
-    // Verificar si ya hay sesión
-    console.log('Llamando checkSession()...');
     checkSession();
-    console.log('checkSession() completado');
 }
 
 // Ejecutar cuando el DOM esté listo
@@ -86,7 +76,27 @@ function checkSession() {
     }
     
     token = storedToken;
-    currentUser = JSON.parse(storedUser);
+    try {
+        currentUser = JSON.parse(storedUser);
+    } catch (error) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        currentUser = null;
+        if (location.pathname !== '/') {
+            location.href = '/';
+        }
+        return;
+    }
+
+    if (!currentUser || !currentUser.rol) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        currentUser = null;
+        if (location.pathname !== '/') {
+            location.href = '/';
+        }
+        return;
+    }
     
     // Mostrar información del usuario
     const userDisplay = document.getElementById('userDisplay');
@@ -125,7 +135,18 @@ async function apiCall(endpoint, options = {}) {
         return;
     }
     
-    return await response.json();
+    const contentType = response.headers.get('Content-Type') || '';
+    if (!contentType.includes('application/json')) {
+        const text = await response.text();
+        return {
+            error: `Respuesta no JSON (${response.status})`,
+            raw: text
+        };
+    }
+
+    const data = await response.json();
+    console.log(`apiCall(${endpoint}) status=${response.status}, data:`, data);
+    return data;
 }
 
 function showLoading(show = true) {

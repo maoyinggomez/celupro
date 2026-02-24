@@ -93,7 +93,29 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="{{ url_for('static', filename='js/auth.js') }}?v={{ cache_buster }}"></script>
-    <script src="{{ url_for('static', filename='js/app.js') }}?v={{ cache_buster }}"></script>
+    <script src="{{ url_for('static', filename='js/auth.js') }}?v={{ cache_buster }}" onerror="document.getElementById('mainContent').innerHTML = '<div class=\"alert alert-danger\">No se pudo cargar auth.js</div>';"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v={{ cache_buster }}" onerror="document.getElementById('mainContent').innerHTML = '<div class=\"alert alert-danger\">No se pudo cargar app.js</div>';"></script>
+    <script>
+        setTimeout(function() {
+            const menu = document.getElementById('menuNav');
+            const main = document.getElementById('mainContent');
+            const menuEmpty = !menu || menu.children.length === 0;
+            const mainEmpty = !main || !main.innerHTML.trim();
+
+            if (menuEmpty && typeof initApp === 'function') {
+                try {
+                    initApp();
+                } catch (error) {
+                    if (main) {
+                        main.innerHTML = '<div class="alert alert-danger">Error al inicializar app: ' + (error.message || error) + '</div>';
+                    }
+                }
+            }
+
+            if (mainEmpty && main) {
+                main.innerHTML = '<div class="alert alert-warning">La aplicación no terminó de iniciar. Recarga con Cmd+Shift+R.</div>';
+            }
+        }, 1200);
+    </script>
 </body>
 </html>
