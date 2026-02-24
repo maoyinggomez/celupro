@@ -19,7 +19,7 @@ print(f"DEBUG: Static exists: {os.path.exists(STATIC_DIR)}")
 
 app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
 
-BACKEND_URL = 'http://127.0.0.1:5000'
+BACKEND_URL = 'http://127.0.0.1:5001'
 
 # Agregar timestamp a cada request para evitar caché
 @app.context_processor
@@ -61,22 +61,37 @@ def proxy_api(path):
         if key.lower() not in ['host', 'content-length']:
             headers[key] = value
     
-    # Asegurar Content-Type correcto
-    if 'content-type' not in headers:
-        headers['Content-Type'] = 'application/json'
-    
     print(f"DEBUG PROXY: {request.method} {path}")
     print(f"  URL: {url}")
+    print(f"  Content-Type: {request.content_type}")
     print(f"  Headers: {dict(headers)}")
+    print(f"  Files: {list(request.files.keys())}")
+    print(f"  Form: {list(request.form.keys())}")
     
     try:
         if request.method == 'GET':
             resp = requests.get(url, headers=headers, params=request.args, timeout=30)
         elif request.method == 'POST':
-            # Obtener el body como data bruta para preservar el content-type
-            data = request.get_data()
-            resp = requests.post(url, headers=headers, data=data, timeout=30)
+            # Si hay archivos, enviarlos como multipart/form-data
+            if request.files:
+                print(f"  -> Enviando archivos: {list(request.files.keys())}")
+                files = {}
+                for key in request.files:
+                    file = request.files[key]
+                    files[key] = (file.filename, file.stream, file.content_type)
+                # No incluir Content-Type en headers para que requests lo genere automáticamente
+                headers_without_ct = {k: v for k, v in headers.items() if k.lower() != 'content-type'}
+                resp = requests.post(url, headers=headers_without_ct, files=files, data=request.form, timeout=30)
+            else:
+                # Si no hay archivos, enviar data normal
+                if 'content-type' not in headers:
+                    headers['Content-Type'] = 'application/json'
+                data = request.get_data()
+                resp = requests.post(url, headers=headers, data=data, timeout=30)
         elif request.method == 'PUT':
+            # Asegurar Content-Type para PUT
+            if 'content-type' not in headers:
+                headers['Content-Type'] = 'application/json'
             # Obtener el body como data bruta
             data = request.get_data()
             resp = requests.put(url, headers=headers, data=data, timeout=30)

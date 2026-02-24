@@ -79,6 +79,7 @@ def init_db():
         tiene_clave BOOLEAN,
         clave TEXT,
         valor_total REAL DEFAULT 0,
+        estado_pago TEXT DEFAULT 'pendiente',
         estado_ingreso TEXT DEFAULT 'pendiente' CHECK(estado_ingreso IN ('pendiente', 'en_reparacion', 'reparado', 'no_reparable', 'entregado', 'cancelado')),
         fecha_ingreso TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         fecha_entrega TIMESTAMP,
@@ -133,9 +134,15 @@ def init_db():
     ''')
     
     conn.commit()
+
+    # Migraciones para bases existentes
+    ensure_schema_updates(cursor, conn)
     
     # Insertar datos por defecto
     insert_default_data(cursor, conn)
+
+    # Asegurar configuraciones mínimas aunque la BD ya tuviera usuarios
+    ensure_default_config(cursor, conn)
     
     conn.close()
     print(f"✓ Base de datos inicializada en: {DB_PATH}")
@@ -260,6 +267,7 @@ def insert_default_data(cursor, conn):
     configuraciones = [
         ('nombre_negocio', 'CELUPRO', 'text'),
         ('telefono_negocio', '+57 300 000 0000', 'text'),
+        ('direccion_negocio', '', 'text'),
         ('email_negocio', 'info@celupro.com', 'text'),
         ('logo_url', '', 'file'),
         ('ancho_papel_mm', '58', 'number')
@@ -271,6 +279,38 @@ def insert_default_data(cursor, conn):
         VALUES (?, ?, ?)
         ''', (clave, valor, tipo))
     
+    conn.commit()
+
+def ensure_schema_updates(cursor, conn):
+    """Aplica migraciones necesarias en bases existentes"""
+    cursor.execute("PRAGMA table_info(ingresos)")
+    columnas_ingresos = {row[1] for row in cursor.fetchall()}
+
+    if 'estado_pago' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN estado_pago TEXT DEFAULT 'pendiente'")
+
+    conn.commit()
+
+def ensure_default_config(cursor, conn):
+    """Asegura claves de configuración mínimas"""
+    configuraciones = [
+        ('nombre_negocio', 'CELUPRO', 'text'),
+        ('telefono_negocio', '+57 300 000 0000', 'text'),
+        ('direccion_negocio', '', 'text'),
+        ('email_negocio', 'info@celupro.com', 'text'),
+        ('logo_url', '', 'file'),
+        ('ancho_papel_mm', '58', 'number')
+    ]
+
+    for clave, valor, tipo in configuraciones:
+        cursor.execute("SELECT id FROM configuracion WHERE clave = ?", (clave,))
+        existe = cursor.fetchone()
+        if not existe:
+            cursor.execute(
+                "INSERT INTO configuracion (clave, valor, tipo) VALUES (?, ?, ?)",
+                (clave, valor, tipo)
+            )
+
     conn.commit()
 
 if __name__ == '__main__':

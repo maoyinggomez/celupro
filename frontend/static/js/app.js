@@ -5,6 +5,15 @@ function initApp() {
     console.log('initApp() called');
     console.log('currentUser:', currentUser);
     
+    // Configurar event listener global para el formulario de configuración
+    // Usa delegación de eventos para que funcione con contenido dinámico
+    document.addEventListener('submit', function(e) {
+        if (e.target && e.target.id === 'configForm') {
+            e.preventDefault();
+            submitConfig(e);
+        }
+    }, true);
+    
     if (currentUser) {
         console.log('User logged in, building menu and loading dashboard');
         buildMenu();
@@ -249,7 +258,7 @@ async function loadDashboard() {
             <div class="col-md-3">
                 <div class="card bg-success text-white">
                     <div class="card-body">
-                        <h5 class="card-title">Reparados</h5>
+                        <h5 class="card-title">Entregados y Pagados</h5>
                         <p class="card-text display-4" id="metricReparados">0</p>
                     </div>
                 </div>
@@ -323,7 +332,8 @@ function calculateMonthlyBalance(ingresos) {
     const monthlyData = new Array(12).fill(0);
     
     ingresos.forEach(ingreso => {
-        if ((ingreso.estado_ingreso === 'reparado' || ingreso.estado_ingreso === 'entregado') && ingreso.valor_total) {
+        // Solo contar ingresos entregados y pagados
+        if (ingreso.estado_ingreso === 'entregado' && ingreso.estado_pago === 'pagado' && ingreso.valor_total) {
             const fecha = new Date(ingreso.fecha_ingreso);
             const mes = fecha.getMonth();
             monthlyData[mes] += ingreso.valor_total;
@@ -440,9 +450,11 @@ function actualizarMetricas(ingresos) {
         filtrados = filtrados.filter(i => i.estado_ingreso === estadoFiltro);
     }
 
-    const reparados = filtrados.filter(i => i.estado_ingreso === 'reparado').length;
+    const reparados = filtrados.filter(i => i.estado_ingreso === 'entregado' && i.estado_pago === 'pagado').length;
     const entregados = filtrados.filter(i => i.estado_ingreso === 'entregado').length;
-    const totalIngresos = filtrados.reduce((sum, i) => sum + (i.valor_total || 0), 0);
+    const totalIngresos = filtrados
+        .filter(i => i.estado_ingreso === 'entregado' && i.estado_pago === 'pagado')
+        .reduce((sum, i) => sum + (i.valor_total || 0), 0);
 
     metricTotal.textContent = filtrados.length;
     metricReparados.textContent = reparados;
@@ -832,6 +844,10 @@ async function submitIngreso(e) {
             console.log('DEBUG: Ingreso creado, número:', numeroIngreso);
             showAlert(`¡Ingreso creado exitosamente! Número: ${numeroIngreso}`, 'success');
             document.getElementById('ingresoForm').reset();
+
+            if (response.id) {
+                await printTicket(response.id);
+            }
             
             // Esperar a que desaparezca la alerta y luego ir a registros
             console.log('DEBUG: Esperando 1.5 segundos antes de cargar registros...');
@@ -1157,8 +1173,15 @@ function renderIngresosEntregadosEnLista(ingresos) {
 async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
     if (!nuevoEstado || nuevoEstado === '-- Seleccione --') return;
     
-    // Si el estado es "entregado", preguntar si fue reparado o no
+    // Si el estado es "entregado", mostrar modal de confirmación con valor
     if (nuevoEstado === 'entregado') {
+        // Obtener detalles del ingreso para mostrar el valor actual
+        const ingreso = await apiCall(`/ingresos/${ingresoId}`);
+        if (!ingreso) {
+            showAlert('Error al obtener detalles del ingreso', 'danger');
+            return;
+        }
+        
         const modal = document.createElement('div');
         modal.className = 'modal fade';
         modal.id = 'modalEstadoEntrega';
@@ -1167,18 +1190,48 @@ async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
             <div class="modal-dialog">
                 <div class="modal-content">
                     <div class="modal-header">
-                        <h5 class="modal-title">¿Cuál fue el resultado?</h5>
+                        <h5 class="modal-title">Confirmar Entrega</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
-                        <p>Selecciona si el celular fue reparado o no antes de marcar como entregado:</p>
+                        <p><strong>Ingreso:</strong> ${ingreso.numero_ingreso}</p>
+                        <p><strong>Cliente:</strong> ${ingreso.cliente_nombre} ${ingreso.cliente_apellido}</p>
+                        <p><strong>Valor actual de reparación:</strong> $ ${ingreso.valor_total?.toLocaleString() || '0'}</p>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">¿Este es el valor final de reparación?</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="confirmarValor" id="valorCorrecto" value="si" checked>
+                                <label class="form-check-label" for="valorCorrecto">
+                                    Sí, el valor es correcto
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="confirmarValor" id="valorIncorrecto" value="no">
+                                <label class="form-check-label" for="valorIncorrecto">
+                                    No, necesito ajustar el valor
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="pagoRecibido" checked>
+                            <label class="form-check-label" for="pagoRecibido">
+                                Marcar como pagado al entregar
+                            </label>
+                        </div>
+                        
+                        <div id="ajusteValor" style="display: none;">
+                            <label class="form-label">Nuevo valor de reparación:</label>
+                            <input type="number" class="form-control" id="nuevoValor" min="0" step="1000" placeholder="Ingrese el valor final">
+                            <label class="form-label mt-2">Motivo del ajuste:</label>
+                            <textarea class="form-control" id="motivoAjuste" rows="2" placeholder="Describe por qué cambió el valor"></textarea>
+                        </div>
                     </div>
                     <div class="modal-footer">
-                        <button type="button" class="btn btn-danger" onclick="procesarEntrega(${ingresoId}, 'no_reparable')">
-                            <i class="fas fa-times me-2"></i> No Reparado
-                        </button>
-                        <button type="button" class="btn btn-success" onclick="procesarEntrega(${ingresoId}, 'reparado')">
-                            <i class="fas fa-check me-2"></i> Reparado
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-success" onclick="procesarEntrega(${ingresoId})">
+                            <i class="fas fa-check me-2"></i> Confirmar Entrega
                         </button>
                     </div>
                 </div>
@@ -1186,6 +1239,23 @@ async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
         `;
         
         document.body.appendChild(modal);
+        
+        // Configurar event listeners para el modal
+        const radios = modal.querySelectorAll('input[name="confirmarValor"]');
+        const ajusteDiv = modal.querySelector('#ajusteValor');
+        const nuevoValorInput = modal.querySelector('#nuevoValor');
+        
+        radios.forEach(radio => {
+            radio.addEventListener('change', function() {
+                if (this.value === 'no') {
+                    ajusteDiv.style.display = 'block';
+                    nuevoValorInput.focus();
+                } else {
+                    ajusteDiv.style.display = 'none';
+                }
+            });
+        });
+        
         const bs_modal = new bootstrap.Modal(modal);
         bs_modal.show();
         
@@ -1205,30 +1275,63 @@ async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
     });
     
     if (response && response.success) {
-        alert('Estado actualizado correctamente');
+        showAlert('Estado actualizado correctamente', 'success');
         loadPage('tecnico'); // Recargar el panel
     } else {
-        alert('Error al actualizar el estado');
+        showAlert('Error al actualizar el estado', 'danger');
     }
 }
 
-async function procesarEntrega(ingresoId, estadoFinal) {
+async function procesarEntrega(ingresoId) {
     try {
-        // Primero actualizar al estado intermedio (reparado o no_reparable)
-        let data = { estado_ingreso: estadoFinal };
-        let response = await apiCall(`/ingresos/${ingresoId}`, {
-            method: 'PUT',
-            body: JSON.stringify(data)
-        });
+        // Verificar si se debe ajustar el valor
+        const confirmarValor = document.querySelector('input[name="confirmarValor"]:checked')?.value;
+        const pagoRecibido = document.getElementById('pagoRecibido')?.checked;
+        let nuevoValor = null;
+        let motivoAjuste = '';
         
-        if (!response || !response.success) {
-            alert('Error al actualizar el estado intermedio: ' + (response?.error || 'desconocido'));
-            return;
+        if (confirmarValor === 'no') {
+            nuevoValor = parseFloat(document.getElementById('nuevoValor').value);
+            if (isNaN(nuevoValor) || nuevoValor < 0) {
+                showAlert('Por favor ingrese un valor válido', 'warning');
+                return;
+            }
+
+            motivoAjuste = (document.getElementById('motivoAjuste')?.value || '').trim();
+            if (!motivoAjuste) {
+                showAlert('Debes ingresar el motivo del ajuste', 'warning');
+                return;
+            }
         }
         
-        // Luego actualizar a entregado
-        data = { estado_ingreso: 'entregado' };
-        response = await apiCall(`/ingresos/${ingresoId}`, {
+        // Si hay un nuevo valor, actualizarlo primero
+        if (nuevoValor !== null) {
+            const dataValor = { valor_total: nuevoValor };
+            const responseValor = await apiCall(`/ingresos/${ingresoId}`, {
+                method: 'PUT',
+                body: JSON.stringify(dataValor)
+            });
+            
+            if (!responseValor || !responseValor.success) {
+                showAlert('Error al actualizar el valor: ' + (responseValor?.error || 'desconocido'), 'danger');
+                return;
+            }
+
+            await apiCall(`/ingresos/${ingresoId}/notas`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    contenido: `AJUSTE DE VALOR FINAL: ${motivoAjuste}. Nuevo valor: $${nuevoValor.toLocaleString('es-CO', { maximumFractionDigits: 0 })}`,
+                    tipo: 'administrativa'
+                })
+            });
+        }
+        
+        // Marcar como entregado
+        const data = {
+            estado_ingreso: 'entregado',
+            estado_pago: pagoRecibido ? 'pagado' : 'pendiente'
+        };
+        const response = await apiCall(`/ingresos/${ingresoId}`, {
             method: 'PUT',
             body: JSON.stringify(data)
         });
@@ -1251,14 +1354,14 @@ async function procesarEntrega(ingresoId, estadoFinal) {
                 }, 500);
             }
             
-            alert('Ingreso marcado como entregado correctamente');
+            showAlert('Ingreso marcado como entregado correctamente', 'success');
             loadPage('tecnico'); // Recargar el panel
         } else {
-            alert('Error al marcar como entregado: ' + (response?.error || 'desconocido'));
+            showAlert('Error al marcar como entregado: ' + (response?.error || 'desconocido'), 'danger');
         }
     } catch (error) {
         console.error('Error en procesarEntrega:', error);
-        alert('Error de conexión: ' + error.message);
+        showAlert('Error de conexión: ' + error.message, 'danger');
     }
 }
 
@@ -1689,6 +1792,12 @@ async function loadAdminConfig() {
                     <input type="tel" class="form-control" id="telefono_negocio"
                            value="${config.telefono_negocio?.valor || ''}">
                 </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Dirección</label>
+                    <input type="text" class="form-control" id="direccion_negocio"
+                           value="${config.direccion_negocio?.valor || ''}">
+                </div>
                 
                 <div class="mb-3">
                     <label class="form-label">Email</label>
@@ -1697,9 +1806,9 @@ async function loadAdminConfig() {
                 </div>
                 
                 <div class="mb-3">
-                    <label class="form-label">Logo (PNG o JPG)</label>
-                    <input type="file" class="form-control" id="logo_file" accept=".png,.jpg,.jpeg">
-                    ${config.logo_url?.valor ? `<small>Logo actual: ${config.logo_url.valor}</small>` : ''}
+                    <label class="form-label">Logo del Negocio (PNG o JPG, máx 5MB)</label>
+                    <input type="file" class="form-control" id="logo_file" accept="image/png,image/jpeg,image/jpg">
+                    ${config.logo_url?.valor ? `<div class="mt-2"><small class="text-muted">Logo actual:</small><br><img src="${config.logo_url.valor}" alt="Logo actual" style="max-height: 80px; max-width: 220px; border: 1px solid #ddd; padding: 4px; border-radius: 4px; margin-top: 5px;"></div>` : '<small class="text-muted d-block mt-1">No hay logo cargado aún</small>'}
                 </div>
                 
                 <button type="submit" class="btn btn-primary">
@@ -1707,51 +1816,100 @@ async function loadAdminConfig() {
                 </button>
             </form>
         </div>
-        
-        <script>
-            document.getElementById('configForm').addEventListener('submit', submitConfig);
-        </script>
     `;
 }
 
 async function submitConfig(e) {
     e.preventDefault();
     
-    const formData = new FormData();
-    formData.append('nombre_negocio', document.getElementById('nombre_negocio').value);
-    formData.append('telefono_negocio', document.getElementById('telefono_negocio').value);
-    formData.append('email_negocio', document.getElementById('email_negocio').value);
+    const logoFileInput = document.getElementById('logo_file');
+    const hasLogoFile = logoFileInput && logoFileInput.files && logoFileInput.files.length > 0;
     
-    if (document.getElementById('logo_file').files.length > 0) {
-        formData.append('logo', document.getElementById('logo_file').files[0]);
+    // Si hay archivo de logo, subirlo primero
+    if (hasLogoFile) {
+        const file = logoFileInput.files[0];
+        console.log('=== DEBUG LOGO UPLOAD ===');
+        console.log('File:', file);
+        console.log('File name:', file.name);
+        console.log('File size:', file.size);
+        console.log('File type:', file.type);
+        console.log('Token:', token ? 'Token presente' : 'Token AUSENTE');
+        console.log('API_BASE:', API_BASE);
         
-        const logoResponse = await fetch(`${API_BASE}/admin/config/logo`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`
-            },
-            body: formData
-        });
+        // Validar tipo de archivo
+        if (!file.name.match(/\.(jpg|jpeg|png)$/i)) {
+            showAlert('Por favor selecciona un archivo PNG o JPG', 'warning');
+            return;
+        }
         
-        if (!logoResponse.ok) {
-            showAlert('Error al subir logo', 'danger');
+        // Validar tamaño (máximo 5MB)
+        if (file.size > 5 * 1024 * 1024) {
+            showAlert('El archivo es muy grande. Máximo 5MB', 'warning');
+            return;
+        }
+        
+        showAlert('Subiendo logo...', 'info');
+        
+        const formData = new FormData();
+        formData.append('logo', file);
+        console.log('FormData creado, archivo añadido con clave "logo"');
+        
+        try {
+            const url = `${API_BASE}/admin/config/logo`;
+            console.log('URL completa:', url);
+            console.log('Enviando petición...');
+            
+            const logoResponse = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
+                body: formData
+            });
+            
+            console.log('Respuesta recibida. Status:', logoResponse.status);
+            console.log('Response OK:', logoResponse.ok);
+            
+            if (!logoResponse.ok) {
+                const errorData = await logoResponse.json();
+                console.log('Error data:', errorData);
+                showAlert(`Error al subir logo: ${errorData.error}`, 'danger');
+                return;
+            }
+            
+            const successData = await logoResponse.json();
+            console.log('Success data:', successData);
+            showAlert('Logo subido exitosamente', 'success');
+        } catch (error) {
+            console.error('Excepción al subir logo:', error);
+            showAlert(`Error de red al subir logo: ${error.message}`, 'danger');
             return;
         }
     }
     
-    const response = await apiCall('/admin/configuracion', {
-        method: 'PUT',
-        body: JSON.stringify({
-            nombre_negocio: document.getElementById('nombre_negocio').value,
-            telefono_negocio: document.getElementById('telefono_negocio').value,
-            email_negocio: document.getElementById('email_negocio').value
-        })
-    });
-    
-    if (response.success) {
-        showAlert('Configuración guardada exitosamente', 'success');
-    } else {
-        showAlert(response.error || 'Error al guardar configuración', 'danger');
+    // Guardar configuración del negocio
+    try {
+        const response = await apiCall('/admin/configuracion', {
+            method: 'PUT',
+            body: JSON.stringify({
+                nombre_negocio: document.getElementById('nombre_negocio').value,
+                telefono_negocio: document.getElementById('telefono_negocio').value,
+                direccion_negocio: document.getElementById('direccion_negocio').value,
+                email_negocio: document.getElementById('email_negocio').value
+            })
+        });
+        
+        if (response.success) {
+            showAlert('Configuración guardada exitosamente', 'success');
+            // Recargar el panel de administración para mostrar los valores actualizados
+            setTimeout(() => {
+                loadPage('admin');
+            }, 800);
+        } else {
+            showAlert(response.error || 'Error al guardar configuración', 'danger');
+        }
+    } catch (error) {
+        showAlert(`Error al guardar: ${error.message}`, 'danger');
     }
 }
 
@@ -2045,66 +2203,8 @@ async function printTicket(ingresoId) {
             return;
         }
         
-        // Convertir base64 a bytes
-        const binaryString = atob(response.ticket_data);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-        }
-        
-        // Crear blob y enviarlo a la impresora
-        const blob = new Blob([bytes], { type: 'application/octet-stream' });
-        
-        // Método 1: Usando API Print (Chrome, Edge)
-        if (navigator.usb) {
-            try {
-                // Obtener dispositivos USB disponibles
-                const devices = await navigator.usb.getDevices();
-                
-                if (devices.length === 0) {
-                    showAlert('No se encontraron impresoras conectadas. Usando simulación...', 'warning');
-                    simulatePrint(response);
-                    return;
-                }
-                
-                // Usar primer dispositivo encontrado
-                const device = devices[0];
-                await device.open();
-                
-                // Enviar comandos a la impresora
-                if (device.configuration === null) {
-                    await device.selectConfiguration(1);
-                }
-                
-                const interfaces = device.configuration.interfaces;
-                const interfaceNum = interfaces[0].interfaceNumber;
-                
-                await device.claimInterface(interfaceNum);
-                
-                // Buscar endpoint OUT
-                const endpoints = interfaces[0].alternate.endpoints;
-                const outEndpoint = endpoints.find(e => e.direction === 'out');
-                
-                if (!outEndpoint) {
-                    throw new Error('No se encontró endpoint de salida');
-                }
-                
-                await device.transferOut(outEndpoint.endpointNumber, bytes);
-                
-                showAlert('[OK] Impresión enviada a ' + response.cliente, 'success');
-                
-                // Cerrar dispositivo
-                await device.close();
-                
-            } catch (usbError) {
-                console.error('Error USB:', usbError);
-                // Fallback a simulación
-                simulatePrint(response);
-            }
-        } else {
-            // Fallback para navegadores sin WebUSB
-            simulatePrint(response);
-        }
+        // Abrir siempre vista previa 58mm inmediatamente
+        simulatePrint(response);
         
     } catch (error) {
         console.error('Error en printTicket:', error);
@@ -2120,6 +2220,19 @@ function simulatePrint(ticketData) {
     // Crear ventana con vista previa del ticket
     const win = window.open('', '_blank', 'width=300,height=600');
     
+    const ingreso = ticketData.ingreso || {};
+    const negocio = ticketData.negocio || {};
+    const nombreNegocio = negocio.nombre_negocio || 'CELUPRO';
+    const telefonoNegocio = negocio.telefono_negocio || '';
+    const direccionNegocio = negocio.direccion_negocio || negocio.email_negocio || '';
+    // Convertir URL relativa del logo a absoluta para que funcione en window.open
+    const logoUrl = negocio.logo_url ? `${window.location.origin}${negocio.logo_url}` : '';
+    const valorTotal = Number(ingreso.valor_total || 0);
+    const fallas = Array.isArray(ingreso.fallas) ? ingreso.fallas : [];
+    const fallasTexto = fallas.length
+        ? fallas.map(f => `• ${f.nombre || 'Falla'}${f.valor_reparacion ? ` ($ ${Number(f.valor_reparacion).toLocaleString('es-CO')})` : ''}`).join('<br>')
+        : (ingreso.falla_general || 'Sin detalle');
+
     win.document.write(`
         <html>
         <head>
@@ -2136,42 +2249,79 @@ function simulatePrint(ticketData) {
                 .ticket {
                     border: 1px dashed #ccc;
                     padding: 10px;
-                    text-align: center;
+                    text-align: left;
                 }
                 .header {
+                    text-align: center;
                     font-weight: bold;
                     margin-bottom: 10px;
+                }
+                .logo {
+                    text-align: center;
+                    margin-bottom: 6px;
+                }
+                .logo img {
+                    max-width: 160px;
+                    max-height: 70px;
                 }
                 .numero {
                     font-size: 18px;
                     font-weight: bold;
                     margin: 10px 0;
+                    text-align: center;
                 }
-                .cliente {
-                    margin-top: 10px;
-                    border-top: 1px solid #000;
-                    padding-top: 10px;
+                .line {
+                    border-top: 1px dashed #000;
+                    margin: 8px 0;
                 }
-                .footer {
-                    margin-top: 10px;
-                    border-top: 1px solid #000;
-                    padding-top: 10px;
+                .section-title {
+                    font-weight: bold;
+                    margin-top: 6px;
+                    margin-bottom: 4px;
+                }
+                .center {
+                    text-align: center;
+                }
+                .small {
                     font-size: 10px;
                 }
             </style>
         </head>
         <body>
             <div class="ticket">
-                <div class="header">CELUPRO</div>
+                ${logoUrl ? `<div class="logo"><img src="${logoUrl}" alt="Logo"></div>` : ''}
+                <div class="header">${nombreNegocio}</div>
+                ${telefonoNegocio ? `<div class="center small">Tel: ${telefonoNegocio}</div>` : ''}
+                ${direccionNegocio ? `<div class="center small">${direccionNegocio}</div>` : ''}
                 <div class="numero">Ingreso #${ticketData.numero_ingreso}</div>
-                <div class="cliente">
-                    <strong>${ticketData.cliente}</strong>
+
+                <div class="section-title">CLIENTE</div>
+                <div><strong>${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}</strong></div>
+                <div>Tel: ${ingreso.cliente_telefono || 'N/A'}</div>
+                <div>Dir: ${ingreso.cliente_direccion || 'N/A'}</div>
+
+                <div class="section-title">EQUIPO</div>
+                <div>${ingreso.marca || ''} ${ingreso.modelo || ''}</div>
+                <div>Color: ${ingreso.color || 'N/A'}</div>
+                <div>Valor reparación: $ ${valorTotal.toLocaleString('es-CO')}</div>
+
+                <div class="line"></div>
+                <div class="center small"><strong>Después de 60 días no se responde</strong></div>
+                <div class="center small"><strong>por equipos abandonados.</strong></div>
+                <div class="line"></div>
+
+                <div class="section-title">COPIA TÉCNICO</div>
+                <div>${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}</div>
+                <div>Tel: ${ingreso.cliente_telefono || 'N/A'}</div>
+                <div>Equipo: ${ingreso.marca || ''} ${ingreso.modelo || ''}</div>
+                <div>Valor: $ ${valorTotal.toLocaleString('es-CO')}</div>
+                <div class="section-title">Detalles:</div>
+                <div class="small">${fallasTexto}</div>
+
+                <div class="line"></div>
+                <div class="small">Impresión: ${new Date().toLocaleString('es-CO')}</div>
+                <div class="small">Firma técnico: __________________</div>
                 </div>
-                <div class="footer">
-                    <p>Impresión: ${new Date().toLocaleString('es-CO')}</p>
-                    <p>[ ][ ][ ]</p>
-                </div>
-            </div>
             <script>
                 window.print();
             </script>
@@ -2501,22 +2651,23 @@ async function addNewFalla(ingresoId) {
 }
 
 // Función para actualizar valor de reparación de una falla
-async function updateValor(ingresoId, fallaId) {
+async function updateValor(ingresoFallaId, nuevoValor) {
     try {
-        const nuevoValor = prompt('Ingresa el nuevo valor de reparación:', '0');
+        const valor = parseFloat(nuevoValor);
+        if (isNaN(valor) || valor < 0) {
+            showAlert('Ingresa un valor válido', 'warning');
+            return;
+        }
         
-        if (nuevoValor === null || nuevoValor === '') return;
-        
-        const response = await apiCall(`/ingresos/${ingresoId}/fallas/${fallaId}`, {
+        const response = await apiCall(`/ingreso-fallas/${ingresoFallaId}/valor`, {
             method: 'PUT',
             body: JSON.stringify({
-                valor_reparacion: parseInt(nuevoValor) || 0
+                valor_reparacion: valor
             })
         });
         
         if (response.success) {
             showAlert('Valor actualizado correctamente', 'success');
-            loadPage('registros');
         } else {
             showAlert(response.error || 'Error al actualizar valor', 'danger');
         }
@@ -2527,24 +2678,27 @@ async function updateValor(ingresoId, fallaId) {
 }
 
 // Función para actualizar estado (ya existe pero mejoramos)
-async function updateEstado(ingresoId, nuevoEstado) {
+async function updateEstado(ingresoFallaId, nuevoEstado) {
     try {
-        const response = await apiCall(`/ingresos/${ingresoId}`, {
+        const response = await apiCall(`/ingreso-fallas/${ingresoFallaId}/estado`, {
             method: 'PUT',
             body: JSON.stringify({
-                estado: nuevoEstado
+                estado_falla: nuevoEstado
             })
         });
         
         if (response.success) {
-            showAlert(`Estado actualizado a "${nuevoEstado}"`, 'success');
-            loadPage('registros');
+            showAlert(`Estado de falla actualizado a "${nuevoEstado}"`, 'success');
+            // Recargar la página actual para mostrar cambios
+            if (window.location.hash.includes('tecnico')) {
+                loadTecnicoPanel();
+            }
         } else {
-            showAlert(response.error || 'Error al actualizar estado', 'danger');
+            showAlert('Error al actualizar estado: ' + (response.error || 'desconocido'), 'danger');
         }
     } catch (error) {
         console.error('Error en updateEstado:', error);
-        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+        showAlert('Error de conexión: ' + error.message, 'danger');
     }
 }
 

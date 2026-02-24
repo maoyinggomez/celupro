@@ -79,92 +79,77 @@ Accesible desde **cualquier navegador en red local (LAN)** con soporte multi-usu
 - Tablas: usuarios, marcas, modelos, ingresos, fallas, notas, configuración
 - Soporta 400+ registros sin problemas
 
-## 📦 Entregables
+## 📦 Estructura del Proyecto
 
 ```
-proyecto celupro/
+celupro-clone/
 ├── backend/                    # API Flask
-│   ├── app.py                 # Aplicación principal
+│   ├── app.py                 # Aplicación principal (puerto 5001)
 │   ├── models/                # Modelos de datos
+│   │   ├── user.py
+│   │   ├── marca.py
+│   │   ├── falla.py
+│   │   ├── ingreso.py
+│   │   └── nota.py
+│   ├── routes/                # Rutas de API
 │   ├── utils/                 # Utilidades (impresora térmica)
 │   ├── requirements.txt       # Dependencias
-│   └── database/
-│       ├── init_db.py         # Inicializador BD
-│       └── celupro.db         # SQLite (se crea automático)
+│   └── database.py            # Configuración BD
 ├── frontend/                  # Interfaz web
-│   ├── server.py              # Servidor Flask
+│   ├── server.py              # Servidor Flask (puerto 3000)
 │   ├── templates/
 │   │   ├── login.html
 │   │   └── dashboard.html
 │   └── static/
 │       ├── css/style.css
 │       ├── js/auth.js
-│       ├── js/app.js
-│       └── logos/             # Carpeta para logo
-├── database/                  # Compartido
-├── start.py                   # Script para iniciar todo
-├── INSTALACION.md             # Manual de instalación
-├── MANUAL_EJECUCION.md        # Manual de uso diario
+│       └── js/app.js
+├── database/                  # Base de datos
+│   ├── init_db.py
+│   ├── celupro.db             # SQLite (se crea automático)
+│   └── SCHEMA.sql
+├── .venv/                     # Entorno virtual Python
+├── pyproject.toml             # Configuración del proyecto
+├── uv.lock                    # Lock de dependencias
 └── README.md                  # Este archivo
 ```
 
 ## 🚀 Inicio Rápido
 
 ### Requisitos
-- Python 3.8+
+- Python 3.9+
 - Windows, macOS o Linux
 - Conexión de red local
 
 ### Instalación (Primera vez)
 
 ```bash
-# 1. Accede a la carpeta del proyecto
-cd "c:\Users\maoyi\OneDrive\Desktop\proyecto celupro"
-
-# 2. Crea entorno virtual
-python -m venv venv
-
-# 3. Activa el entorno (Windows)
-.\venv\Scripts\Activate.ps1
-
-# 4. Instala dependencias del backend
+# 1. Instala dependencias del backend
 cd backend
 pip install -r requirements.txt
 cd ..
 
-# 5. Inicializa base de datos
+# 2. Inicia los servidores
+# Terminal 1: Backend (puerto 5001)
 cd backend
-python -c "from database.init_db import init_db; init_db()"
-```
+python3 app.py
 
-### Ejecución (Cada día)
-
-**Opción A: Automático (Recomendado)**
-```bash
-python start.py
-```
-
-**Opción B: Manual**
-```bash
-# Terminal 1
-cd backend
-python app.py
-
-# Terminal 2
+# Terminal 2: Frontend (puerto 3000)
 cd frontend
-python server.py
+python3 server.py
 ```
 
 ### Acceso
-- **Local:** http://localhost:3000
+- **Local:** http://127.0.0.1:3000
 - **Red Local:** http://[TU_IP]:3000
-- **Usuario:** admin
-- **Contraseña:** admin123
+
+> ℹ️ La base de datos se crea automáticamente en el primer inicio.
 
 ## 📖 Documentación
 
-- **[INSTALACION.md](INSTALACION.md)** - Instalación detallada
-- **[MANUAL_EJECUCION.md](MANUAL_EJECUCION.md)** - Uso diario y funcionalidades
+- **Este README** - Guía completa del proyecto
+- **backend/requirements.txt** - Dependencias instaladas
+- **database/SCHEMA.sql** - Estructura de la base de datos
 
 ## 🗺️ Flujos principales
 
@@ -254,26 +239,27 @@ Estado "entregado" ✓
 
 ## 🐛 Troubleshooting
 
-### Puerto en uso
-```powershell
-netstat -ano | findstr :5000
-taskkill /PID [PID] /F
+### Puerto en uso (macOS/Linux)
+```bash
+# Ver qué está usando el puerto
+lsof -i :5001
+
+# Matar el proceso
+kill -9 [PID]
 ```
 
 ### Base de datos corrupta
-```powershell
+```bash
+# Eliminar y recrear
+rm database/celupro.db
+cd backend && python3 app.py  # Se recrea automáticamente
+```
+
+### Módulos no encontrados
+```bash
 cd backend
-Remove-Item ..\..\database\celupro.db
-python -c "from database.init_db import init_db; init_db()"
+pip install -r requirements.txt
 ```
-
-### Permisos de firewall
-```powershell
-# PowerShell como admin
-netsh advfirewall firewall add rule name="CELUPRO" dir=in action=allow protocol=tcp localport=5000
-```
-
-Ver **[INSTALACION.md](INSTALACION.md)** para más detalles.
 
 ## 📋 Próximas mejoras (Roadmap)
 
@@ -318,9 +304,7 @@ Desarrollado con:
 - Werkzeug
 
 ---
-
-**Versión:** 1.0  
-**Última actualización:** Noviembre 2024  
-**Estado:** ✅ Listo para uso
-
+2.0  
+**Última actualización:** Febrero 2026  
+**Estado:** ✅ En desarrollo activo
 **¿Necesitas ayuda?** Consulta los manuales incluidos o contacta al administrador del sistema.

@@ -77,7 +77,11 @@ class Ingreso:
             m.nombre as marca,
             md.nombre as modelo,
             u1.nombre as empleado,
-            u2.nombre as tecnico
+            u2.nombre as tecnico,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM ingreso_fallas if2 
+                WHERE if2.ingreso_id = i.id AND if2.estado_falla = 'reparada'
+            ) THEN 1 ELSE 0 END as fue_reparado
         FROM ingresos i
         LEFT JOIN marcas m ON i.marca_id = m.id
         LEFT JOIN modelos md ON i.modelo_id = md.id
@@ -100,9 +104,14 @@ class Ingreso:
             md.nombre as modelo,
             i.color,
             i.estado_ingreso,
+            i.estado_pago,
             i.valor_total,
             u1.nombre as empleado,
-            u2.nombre as tecnico
+            u2.nombre as tecnico,
+            CASE WHEN EXISTS (
+                SELECT 1 FROM ingreso_fallas if2 
+                WHERE if2.ingreso_id = i.id AND if2.estado_falla = 'reparada'
+            ) THEN 1 ELSE 0 END as fue_reparado
         FROM ingresos i
         LEFT JOIN marcas m ON i.marca_id = m.id
         LEFT JOIN modelos md ON i.modelo_id = md.id
@@ -126,6 +135,10 @@ class Ingreso:
             if filtros.get('estado'):
                 query += " AND i.estado_ingreso = ?"
                 params.append(filtros['estado'])
+
+            if filtros.get('estado_pago'):
+                query += " AND i.estado_pago = ?"
+                params.append(filtros['estado_pago'])
             
             if filtros.get('fecha_inicio'):
                 query += " AND DATE(i.fecha_ingreso) >= ?"
@@ -160,6 +173,10 @@ class Ingreso:
             if filtros.get('estado'):
                 query += " AND estado_ingreso = ?"
                 params.append(filtros['estado'])
+
+            if filtros.get('estado_pago'):
+                query += " AND estado_pago = ?"
+                params.append(filtros['estado_pago'])
             
             if filtros.get('fecha_inicio'):
                 query += " AND DATE(fecha_ingreso) >= ?"
@@ -189,9 +206,9 @@ class Ingreso:
         params = []
         
         for key, value in datos.items():
-            if key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'falla_general']:
-                # Convertir a mayúsculas si es string
-                if isinstance(value, str):
+            if key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'falla_general', 'valor_total', 'estado_pago']:
+                # Convertir a mayúsculas si es string (excepto valor_total)
+                if isinstance(value, str) and key not in ['valor_total', 'estado_pago']:
                     value = value.upper()
                 updates.append(f"{key} = ?")
                 params.append(value)

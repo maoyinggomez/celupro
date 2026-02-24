@@ -27,6 +27,8 @@ app = Flask(__name__)
 # Configuración
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'celupro-secret-key-2024')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=72)
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB máximo
+app.config['UPLOAD_FOLDER'] = Path(__file__).resolve().parent.parent / 'frontend' / 'static' / 'logos'
 
 # Inicializar extensiones
 CORS(app)
@@ -320,13 +322,12 @@ def update_ingreso(ingreso_id):
             Ingreso.update_estado(ingreso_id, data['estado_ingreso'])
         
         # Actualizar otros campos si es necesario
-        if 'cliente_nombre' in data or 'cliente_apellido' in data or 'color' in data:
-            updates = {}
-            for key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'falla_general']:
-                if key in data:
-                    updates[key] = data[key]
-            if updates:
-                Ingreso.update(ingreso_id, updates)
+        updates = {}
+        for key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'falla_general', 'valor_total', 'estado_pago']:
+            if key in data:
+                updates[key] = data[key]
+        if updates:
+            Ingreso.update(ingreso_id, updates)
         
         return jsonify({'success': True, 'message': 'Ingreso actualizado'}), 200
     except Exception as e:
@@ -348,6 +349,8 @@ def get_ingresos():
         filtros['marca_id'] = request.args.get('marca_id', type=int)
     if request.args.get('estado'):
         filtros['estado'] = request.args.get('estado')
+    if request.args.get('estado_pago'):
+        filtros['estado_pago'] = request.args.get('estado_pago')
     if request.args.get('fecha_inicio'):
         filtros['fecha_inicio'] = request.args.get('fecha_inicio')
     if request.args.get('fecha_fin'):
@@ -570,27 +573,62 @@ def update_configuracion():
 @role_required('admin')
 def upload_logo():
     """Sube un logo para el negocio"""
-    if 'logo' not in request.files:
-        return jsonify({'error': 'Archivo no proporcionado'}), 400
-    
-    file = request.files['logo']
-    
-    if file.filename == '':
-        return jsonify({'error': 'Nombre de archivo inválido'}), 400
-    
-    if not file.filename.endswith(('.png', '.jpg', '.jpeg')):
-        return jsonify({'error': 'Solo se permiten PNG y JPG'}), 400
-    
     try:
-        filename = 'logo.' + file.filename.split('.')[-1].lower()
-        filepath = os.path.join('frontend/static/logos', filename)
-        file.save(filepath)
+        print("=== UPLOAD LOGO DEBUG ===")
+        print(f"Content-Type: {request.content_type}")
+        print(f"Files en request: {list(request.files.keys())}")
+        print(f"Form data: {list(request.form.keys())}")
         
-        Configuracion.set('logo_url', f'/static/logos/{filename}')
+        # Verificar que llega el archivo
+        if 'logo' not in request.files:
+            print("ERROR: No se encontró 'logo' en request.files")
+            return jsonify({'error': 'No se envió ningún archivo'}), 400
         
-        return jsonify({'success': True, 'url': f'/static/logos/{filename}'}), 200
+        file = request.files['logo']
+        print(f"Archivo recibido: {file}")
+        print(f"Filename: {file.filename}")
+        
+        # Verificar que tiene nombre
+        if not file or file.filename == '':
+            print("ERROR: Archivo sin nombre")
+            return jsonify({'error': 'Archivo sin nombre'}), 400
+        
+        # Verificar extensión
+        if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            print(f"ERROR: Extensión inválida: {file.filename}")
+            return jsonify({'error': 'Solo se permiten archivos PNG o JPG'}), 400
+        
+        # Crear directorio si no existe
+        logos_dir = Path(app.config['UPLOAD_FOLDER'])
+        print(f"Directorio de logos: {logos_dir}")
+        logos_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Guardar con nombre fijo
+        ext = file.filename.split('.')[-1].lower()
+        filename = f'logo.{ext}'
+        filepath = logos_dir / filename
+        print(f"Guardando en: {filepath}")
+        
+        # Guardar archivo
+        file.save(str(filepath))
+        print(f"Archivo guardado exitosamente")
+        
+        # Actualizar configuración
+        logo_url = f'/static/logos/{filename}'
+        Configuracion.set('logo_url', logo_url)
+        print(f"Configuración actualizada con URL: {logo_url}")
+        
+        return jsonify({
+            'success': True, 
+            'url': logo_url,
+            'message': 'Logo subido exitosamente'
+        }), 200
+        
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        print(f"EXCEPCIÓN: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Error al procesar archivo: {str(e)}'}), 500
 
 # ===== RUTA DE TICKET TÉRMICO =====
 @app.route('/api/ingresos/<int:ingreso_id>/ticket', methods=['GET'])
@@ -607,12 +645,22 @@ def get_ticket_data(ingreso_id):
         fallas = IngresoFalla.get_by_ingreso(ingreso_id)
         ingreso_dict = dict(ingreso)
         ingreso_dict['fallas'] = fallas
+
+        # Datos del negocio para vista previa
+        datos_negocio = Configuracion.get_datos_negocio()
+        ingreso_dict['nombre_negocio'] = datos_negocio.get('nombre_negocio', 'CELUPRO')
+        ingreso_dict['telefono_negocio'] = datos_negocio.get('telefono_negocio', '')
+        ingreso_dict['direccion_negocio'] = datos_negocio.get('direccion_negocio', '')
+        ingreso_dict['email_negocio'] = datos_negocio.get('email_negocio', '')
         
-        # Obtener ruta del logo
+        # Obtener ruta del logo (absoluta desde la raíz del proyecto)
         logo_path = None
         logo_config = Configuracion.get('logo_url')
         if logo_config:
-            logo_path = os.path.join('frontend/static/logos', logo_config.split('/')[-1])
+            # Construir ruta absoluta al logo
+            project_root = Path(__file__).parent.parent
+            logo_filename = logo_config.split('/')[-1]
+            logo_path = str(project_root / 'frontend' / 'static' / 'logos' / logo_filename)
         
         # Generar datos del ticket
         ticket_bytes = generate_ticket_data(ingreso_dict, logo_path)
@@ -624,7 +672,10 @@ def get_ticket_data(ingreso_id):
         return jsonify({
             'ticket_data': ticket_b64,
             'numero_ingreso': ingreso['numero_ingreso'],
-            'cliente': f"{ingreso['cliente_nombre']} {ingreso['cliente_apellido']}"
+            'cliente': f"{ingreso['cliente_nombre']} {ingreso['cliente_apellido']}",
+            'ingreso': ingreso_dict,
+            'negocio': datos_negocio,
+            'paper_width_mm': int(Configuracion.get('ancho_papel_mm') or 58)
         }), 200
     
     except Exception as e:
@@ -687,5 +738,5 @@ def buscar_clientes():
         return jsonify({'error': error_msg, 'trace': trace}), 500
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5000)
+    app.run(debug=False, host='0.0.0.0', port=5001)
 

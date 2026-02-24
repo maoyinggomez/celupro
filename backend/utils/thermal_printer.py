@@ -177,12 +177,59 @@ def generate_ticket_data(ingreso_dict, logo_path=None):
     if logo_path:
         ticket.add_logo(logo_path)
     
-    # Nombre del negocio
-    ticket.add_text("CELUPRO", size='large', align='center', bold=True)
+    # Nombre del negocio y datos de contacto
+    ticket.add_text(ingreso_dict.get('nombre_negocio', 'CELUPRO'), size='large', align='center', bold=True)
     ticket.add_text("Centro de Reparación", size='normal', align='center')
+    if ingreso_dict.get('telefono_negocio'):
+        ticket.add_text(f"Tel: {ingreso_dict.get('telefono_negocio')}", align='center')
+    if ingreso_dict.get('direccion_negocio'):
+        ticket.add_text(ingreso_dict.get('direccion_negocio'), align='center')
+    elif ingreso_dict.get('email_negocio'):
+        ticket.add_text(ingreso_dict.get('email_negocio'), align='center')
     ticket.add_line()
     
-    # Datos del ingreso
+    # PARTE PARA EL CLIENTE
+    ticket.add_text("RECIBO DE INGRESO", size='double', align='center', bold=True)
+    ticket.add_newlines(1)
+    
+    # Número y fecha
+    ticket.add_table_row("Ingreso:", ingreso_dict.get('numero_ingreso', 'N/A'))
+    ticket.add_table_row("Fecha:", datetime.now().strftime("%d/%m/%Y %H:%M"))
+    ticket.add_line()
+    
+    # Datos del cliente
+    ticket.add_text("DATOS DEL CLIENTE", size='normal', align='left', bold=True)
+    cliente_nombre = f"{ingreso_dict.get('cliente_nombre', '')} {ingreso_dict.get('cliente_apellido', '')}"
+    ticket.add_table_row("Nombre:", cliente_nombre)
+    ticket.add_table_row("Cédula:", ingreso_dict.get('cliente_cedula', ''))
+    ticket.add_table_row("Teléfono:", ingreso_dict.get('cliente_telefono', ''))
+    ticket.add_table_row("Dirección:", ingreso_dict.get('cliente_direccion', 'N/A')[:25])
+    ticket.add_line()
+    
+    # Datos del equipo
+    ticket.add_text("EQUIPO RECIBIDO", size='normal', align='left', bold=True)
+    ticket.add_table_row("Marca:", ingreso_dict.get('marca', ''))
+    ticket.add_table_row("Modelo:", ingreso_dict.get('modelo', ''))
+    ticket.add_table_row("Color:", ingreso_dict.get('color', 'N/A'))
+    ticket.add_table_row("Clave:", "SÍ" if ingreso_dict.get('tiene_clave') else "NO")
+    ticket.add_line()
+    
+    # Valor estimado
+    total = ingreso_dict.get('valor_total', 0) or 0
+    ticket.add_text(f"VALOR ESTIMADO: ${total:,.0f}", size='normal', align='center', bold=True)
+    
+    ticket.add_newlines(1)
+    ticket.add_text("Después de 60 días no se responde", align='center')
+    ticket.add_text("por equipos abandonados.", align='center')
+    
+    # LÍNEA DE CORTE
+    ticket.add_newlines(2)
+    ticket.add_line('=', 32)
+    ticket.add_text("CORTE AQUÍ", align='center')
+    ticket.add_line('=', 32)
+    ticket.add_newlines(2)
+    
+    # PARTE PARA EL TÉCNICO
     ticket.add_text("INGRESO TÉCNICO", size='double', align='center', bold=True)
     ticket.add_newlines(1)
     
@@ -192,27 +239,32 @@ def generate_ticket_data(ingreso_dict, logo_path=None):
     ticket.add_line()
     
     # Datos del cliente
-    ticket.add_text("CLIENTE", size='double', align='left', bold=True)
-    cliente_nombre = f"{ingreso_dict.get('cliente_nombre', '')} {ingreso_dict.get('cliente_apellido', '')}"
+    ticket.add_text("CLIENTE", size='normal', align='left', bold=True)
     ticket.add_table_row("Nombre:", cliente_nombre)
-    ticket.add_table_row("Cédula:", ingreso_dict.get('cliente_cedula', ''))
     ticket.add_table_row("Teléfono:", ingreso_dict.get('cliente_telefono', ''))
-    ticket.add_table_row("Dirección:", ingreso_dict.get('cliente_direccion', 'N/A')[:25])
     ticket.add_line()
     
     # Datos del equipo
-    ticket.add_text("EQUIPO", size='double', align='left', bold=True)
+    ticket.add_text("EQUIPO", size='normal', align='left', bold=True)
     ticket.add_table_row("Marca:", ingreso_dict.get('marca', ''))
     ticket.add_table_row("Modelo:", ingreso_dict.get('modelo', ''))
     ticket.add_table_row("Color:", ingreso_dict.get('color', 'N/A'))
     ticket.add_table_row("Clave:", "SÍ" if ingreso_dict.get('tiene_clave') else "NO")
     ticket.add_line()
     
+    # Estado del equipo
+    ticket.add_text("ESTADO DEL EQUIPO", size='normal', align='left', bold=True)
+    ticket.add_table_row("Display:", "OK" if ingreso_dict.get('estado_display') else "MAL")
+    ticket.add_table_row("Táctil:", "OK" if ingreso_dict.get('estado_tactil') else "MAL")
+    ticket.add_table_row("Botones:", "OK" if ingreso_dict.get('estado_botones') else "MAL")
+    ticket.add_table_row("Apagado:", "OK" if ingreso_dict.get('estado_apagado') else "MAL")
+    ticket.add_line()
+    
     # Fallas
     if ingreso_dict.get('fallas'):
-        ticket.add_text("FALLAS DIAGNOSTICADAS", size='double', align='left', bold=True)
+        ticket.add_text("FALLAS DIAGNOSTICADAS", size='normal', align='left', bold=True)
         for falla in ingreso_dict['fallas']:
-            valor = falla.get('valor_reparacion', 0)
+            valor = falla.get('valor_reparacion', 0) or 0
             falla_text = f"{falla.get('nombre', 'N/A')}"
             if valor > 0:
                 falla_text += f" - ${valor:,.0f}"
@@ -221,17 +273,16 @@ def generate_ticket_data(ingreso_dict, logo_path=None):
     
     # Notas
     if ingreso_dict.get('falla_general'):
-        ticket.add_text("OBSERVACIONES", size='double', align='left', bold=True)
+        ticket.add_text("OBSERVACIONES", size='normal', align='left', bold=True)
         ticket.add_text(ingreso_dict['falla_general'][:50])
         ticket.add_line()
     
     # Total
-    total = ingreso_dict.get('valor_total', 0)
-    ticket.add_text(f"TOTAL: ${total:,.0f}", size='large', align='center', bold=True)
+    ticket.add_text(f"VALOR TOTAL: ${total:,.0f}", size='large', align='center', bold=True)
     
     ticket.add_newlines(2)
-    ticket.add_text("Gracias por su confianza", align='center')
-    ticket.add_text("www.celupro.com", align='center')
+    ticket.add_text("Técnico: ____________________", align='left')
+    ticket.add_text("Fecha: ____/____/____", align='left')
     
     ticket.cut_paper()
     
