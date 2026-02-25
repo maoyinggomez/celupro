@@ -64,6 +64,7 @@ function initApp() {
     if (user && user.rol) {
         console.log('User logged in, building menu and loading dashboard');
         buildMenu();
+        loadNavbarBrand();
         
         // Mostrar botón de usuarios si es admin
         if (user.rol === 'admin') {
@@ -77,6 +78,84 @@ function initApp() {
     } else {
         console.log('No user found, redirecting to login');
         window.location.href = '/';
+    }
+}
+
+async function loadNavbarBrand() {
+    const brandEl = document.getElementById('navbarBrand');
+    if (!brandEl) return;
+
+    let brandImgEl = document.getElementById('navbarBrandImg');
+    if (!brandImgEl) {
+        brandEl.innerHTML = '';
+        brandImgEl = document.createElement('img');
+        brandImgEl.id = 'navbarBrandImg';
+        brandImgEl.className = 'navbar-logo-img';
+        brandImgEl.alt = 'Logo';
+        brandEl.appendChild(brandImgEl);
+    }
+
+    const buildLogoCandidates = (url) => {
+        const base = url || '/static/logos/logo.png';
+        const timestamp = `v=${Date.now()}`;
+        const addTs = (u) => `${u}${u.includes('?') ? '&' : '?'}${timestamp}`;
+        const candidates = [addTs(base)];
+
+        if (base.startsWith('/')) {
+            candidates.push(addTs(`${window.location.origin}${base}`));
+        }
+
+        if (!base.includes('/static/logos/logo_navbar.png')) {
+            candidates.push(addTs('/static/logos/logo_navbar.png'));
+            candidates.push(addTs(`${window.location.origin}/static/logos/logo_navbar.png`));
+        }
+
+        if (!base.includes('/static/logos/logo.png')) {
+            candidates.push(addTs('/static/logos/logo.png'));
+            candidates.push(addTs(`${window.location.origin}/static/logos/logo.png`));
+        }
+
+        return [...new Set(candidates)];
+    };
+
+    const setBrandLogo = (url, alt = 'Logo') => {
+        const candidates = buildLogoCandidates(url);
+        let index = 0;
+
+        brandImgEl.alt = alt;
+        brandImgEl.onerror = () => {
+            index += 1;
+            if (index < candidates.length) {
+                brandImgEl.src = candidates[index];
+            }
+        };
+
+        brandImgEl.src = candidates[index];
+    };
+
+    // Mostrar logo navbar por defecto
+    setBrandLogo('/static/logos/logo.png', 'Logo');
+
+    try {
+        // Primero intentar con configuración admin (estable y ya existente)
+        const adminConfig = await apiCall('/admin/configuracion');
+        if (adminConfig && !adminConfig.error) {
+            const logoUrl = adminConfig.logo_navbar_url?.valor || adminConfig.logo_url?.valor;
+            const nombreNegocio = (adminConfig.nombre_negocio?.valor || 'Logo').trim() || 'Logo';
+            if (logoUrl) {
+                setBrandLogo(logoUrl, nombreNegocio);
+                return;
+            }
+        }
+
+        // Fallback: endpoint público si existe
+        const branding = await apiCall('/configuracion/publica');
+        if (branding && !branding.error && (branding.logo_navbar_url || branding.logo_url)) {
+            const nombreNegocio = (branding.nombre_negocio || 'Logo').trim() || 'Logo';
+            setBrandLogo(branding.logo_navbar_url || branding.logo_url, nombreNegocio);
+        }
+    } catch (error) {
+        console.error('Error cargando logo del navbar:', error);
     }
 }
 
@@ -119,28 +198,36 @@ function buildMenu() {
     
     menu.innerHTML = items.map(item => `
         <li class="nav-item mb-2">
-            <a class="nav-link" href="#" onclick="loadPage('${item.page}'); return false;">
-                <i class="fas ${item.icon} me-2"></i>
-                ${item.label}
+            <a class="nav-link" data-page="${item.page}" href="#" onclick="loadPage('${item.page}'); return false;">
+                <span class="menu-icon-wrap">
+                    <i class="fas ${item.icon}"></i>
+                </span>
+                <span class="menu-label">${item.label}</span>
             </a>
         </li>
     `).join('');
+
+    updateMenuActiveState(currentPage || items[0]?.page);
+}
+
+function updateMenuActiveState(page) {
+    const links = document.querySelectorAll('#menuNav .nav-link[data-page]');
+    links.forEach(link => {
+        const isActive = link.getAttribute('data-page') === page;
+        link.classList.toggle('active', isActive);
+        link.setAttribute('aria-current', isActive ? 'page' : 'false');
+    });
 }
 
 async function loadPage(page) {
     const user = getCurrentUserSafe();
 
     if (page === 'admin') {
-        const activeAdminTab = document.querySelector('#mainContent .nav-tabs .nav-link.active');
-        if (activeAdminTab) {
-            const href = activeAdminTab.getAttribute('href');
-            if (href && href.startsWith('#')) {
-                adminActiveTab = href.substring(1);
-            }
-        }
+        adminActiveTab = 'usuarios';
     }
 
     currentPage = page;
+    updateMenuActiveState(page);
     const mainContent = document.getElementById('mainContent');
     
     if (!mainContent) {
@@ -230,16 +317,72 @@ async function loadPage(page) {
                         buscarClienteInput.addEventListener('input', buscarClientes);
                     }
                     
-                    // Agregar listener al checkbox de clave
-                    const tieneClaveCheckbox = document.getElementById('tiene_clave');
-                    if (tieneClaveCheckbox) {
-                        tieneClaveCheckbox.addEventListener('change', function() {
-                            const div = document.getElementById('claveDiv');
-                            if (div) {
-                                div.style.display = this.checked ? 'block' : 'none';
-                            }
+                    const tieneClaveSelect = document.getElementById('tiene_clave');
+                    if (tieneClaveSelect) {
+                        tieneClaveSelect.addEventListener('change', toggleClave);
+                    }
+
+                    const bandejaSimSelect = document.getElementById('bandeja_sim_select');
+                    if (bandejaSimSelect) {
+                        bandejaSimSelect.addEventListener('change', toggleBandejaSimColor);
+                    }
+
+                    const imeiInput = document.getElementById('imei');
+                    if (imeiInput) {
+                        imeiInput.addEventListener('input', () => {
+                            imeiInput.value = imeiInput.value.replace(/\D/g, '');
                         });
                     }
+
+                    const valorInput = document.getElementById('valor_reparacion');
+                    if (valorInput) {
+                        valorInput.addEventListener('input', () => {
+                            const numericValue = parseMonetaryValue(valorInput.value);
+                            valorInput.value = numericValue > 0 ? formatNumberCO(numericValue) : '';
+                        });
+                    }
+
+                    document.querySelectorAll('.falla-checkbox').forEach(cb => {
+                        cb.addEventListener('change', () => {
+                            syncValorReparacionFromFallas();
+                            updateFallasSelectedCount();
+                        });
+                    });
+
+                    const fallasSearchInput = document.getElementById('fallasSearch');
+                    if (fallasSearchInput) {
+                        fallasSearchInput.addEventListener('focus', openFallasDropdown);
+                        fallasSearchInput.addEventListener('input', () => {
+                            openFallasDropdown();
+                            filterFallasList();
+                        });
+                    }
+
+                    const fallasToggleBtn = document.getElementById('fallasDropdownToggle');
+                    if (fallasToggleBtn) {
+                        fallasToggleBtn.addEventListener('click', (event) => {
+                            event.preventDefault();
+                            toggleFallasDropdown();
+                        });
+                    }
+
+                    if (window._fallasOutsideClickHandler) {
+                        document.removeEventListener('click', window._fallasOutsideClickHandler);
+                    }
+
+                    window._fallasOutsideClickHandler = (event) => {
+                        const selector = document.getElementById('fallasSelector');
+                        if (!selector) return;
+                        if (!selector.contains(event.target)) {
+                            closeFallasDropdown();
+                        }
+                    };
+                    document.addEventListener('click', window._fallasOutsideClickHandler);
+
+                    toggleClave();
+                    toggleBandejaSimColor();
+                    syncValorReparacionFromFallas();
+                    updateFallasSelectedCount();
                 } catch (error) {
                     console.error('Error en wizard initialization:', error);
                 }
@@ -285,10 +428,11 @@ async function loadDashboard() {
     const values = months.map((_, i) => monthlyData[i] || 0);
 
     return `
-        <h2 class="mb-4">Dashboard - Balance Mensual</h2>
+        <div class="dashboard-shell">
+        <h2 class="mb-4 dashboard-title">Dashboard - Balance Mensual</h2>
         
-        <div class="card mb-4">
-            <div class="card-header bg-primary text-white">
+        <div class="card mb-4 dashboard-card">
+            <div class="card-header dashboard-card-header text-white">
                 <h5 class="mb-0">Filtro por Fechas</h5>
             </div>
             <div class="card-body">
@@ -312,7 +456,7 @@ async function loadDashboard() {
                         </select>
                     </div>
                     <div class="col-md-3 d-flex align-items-end">
-                        <button class="btn btn-primary w-100" onclick="filtrarDashboard()">
+                        <button class="btn btn-dashboard-filter w-100" onclick="filtrarDashboard()">
                             <i class="fas fa-filter me-2"></i> Filtrar
                         </button>
                     </div>
@@ -320,8 +464,8 @@ async function loadDashboard() {
             </div>
         </div>
 
-        <div class="card mb-4">
-            <div class="card-header">
+        <div class="card mb-4 dashboard-card">
+            <div class="card-header dashboard-card-header text-white">
                 <h5 class="mb-0">Balance Mensual</h5>
             </div>
             <div class="card-body">
@@ -331,7 +475,7 @@ async function loadDashboard() {
 
         <div class="row mb-4" id="metricsRow">
             <div class="col-md-3">
-                <div class="card bg-info text-white">
+                <div class="card bg-info text-white dashboard-metric-card">
                     <div class="card-body">
                         <h5 class="card-title">Total Servicios</h5>
                         <p class="card-text display-4" id="metricTotal">0</p>
@@ -339,7 +483,7 @@ async function loadDashboard() {
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card bg-success text-white">
+                <div class="card bg-success text-white dashboard-metric-card">
                     <div class="card-body">
                         <h5 class="card-title">Entregados y Pagados</h5>
                         <p class="card-text display-4" id="metricReparados">0</p>
@@ -347,7 +491,7 @@ async function loadDashboard() {
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card bg-primary text-white">
+                <div class="card bg-primary text-white dashboard-metric-card">
                     <div class="card-body">
                         <h5 class="card-title">Entregados</h5>
                         <p class="card-text display-4" id="metricEntregados">0</p>
@@ -355,7 +499,7 @@ async function loadDashboard() {
                 </div>
             </div>
             <div class="col-md-3">
-                <div class="card bg-warning text-dark">
+                <div class="card bg-warning text-dark dashboard-metric-card">
                     <div class="card-body">
                         <h5 class="card-title">Total Ingresos</h5>
                         <p class="card-text display-4" id="metricIngresos">$ 0</p>
@@ -364,8 +508,8 @@ async function loadDashboard() {
             </div>
         </div>
         
-        <div class="card">
-            <div class="card-header">
+        <div class="card dashboard-card">
+            <div class="card-header dashboard-card-header text-white">
                 <h5 class="mb-0">Ingresos Recientes</h5>
             </div>
             <div class="card-body">
@@ -408,6 +552,7 @@ async function loadDashboard() {
                 </div>
             </div>
         </div>
+        </div>
     `;
 }
 
@@ -445,6 +590,35 @@ function crearGraficoBalance(values) {
         }
 
         const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+        const monthColors = [
+            'rgba(255, 99, 132, 0.72)',
+            'rgba(54, 162, 235, 0.72)',
+            'rgba(255, 206, 86, 0.72)',
+            'rgba(75, 192, 192, 0.72)',
+            'rgba(153, 102, 255, 0.72)',
+            'rgba(255, 159, 64, 0.72)',
+            'rgba(46, 204, 113, 0.72)',
+            'rgba(231, 76, 60, 0.72)',
+            'rgba(52, 152, 219, 0.72)',
+            'rgba(241, 196, 15, 0.72)',
+            'rgba(155, 89, 182, 0.72)',
+            'rgba(26, 188, 156, 0.72)'
+        ];
+        const monthBorderColors = [
+            'rgba(255, 99, 132, 1)',
+            'rgba(54, 162, 235, 1)',
+            'rgba(255, 206, 86, 1)',
+            'rgba(75, 192, 192, 1)',
+            'rgba(153, 102, 255, 1)',
+            'rgba(255, 159, 64, 1)',
+            'rgba(46, 204, 113, 1)',
+            'rgba(231, 76, 60, 1)',
+            'rgba(52, 152, 219, 1)',
+            'rgba(241, 196, 15, 1)',
+            'rgba(155, 89, 182, 1)',
+            'rgba(26, 188, 156, 1)'
+        ];
+        const monthHoverColors = monthColors.map(color => color.replace('0.72', '0.92'));
         
         window.chartInstance = new Chart(ctx, {
             type: 'bar',
@@ -453,11 +627,11 @@ function crearGraficoBalance(values) {
                 datasets: [{
                     label: 'Balance Mensual ($)',
                     data: values,
-                    backgroundColor: 'rgba(75, 192, 192, 0.7)',
-                    borderColor: 'rgba(75, 192, 192, 1)',
+                    backgroundColor: monthColors,
+                    borderColor: monthBorderColors,
                     borderWidth: 2,
                     borderRadius: 5,
-                    hoverBackgroundColor: 'rgba(75, 192, 192, 0.9)'
+                    hoverBackgroundColor: monthHoverColors
                 }]
             },
             options: {
@@ -581,18 +755,21 @@ async function loadIngresoForm() {
     console.log('Marcas response:', marcas);
     const fallas = await apiCall('/fallas');
     console.log('Fallas response:', fallas);
+    const tecnicos = await apiCall('/tecnicos');
+    console.log('Técnicos response:', tecnicos);
     
-    if (!marcas || !fallas) {
+    if (!marcas || !fallas || !tecnicos) {
         console.error('Error: marcas or fallas is null/undefined', {marcas, fallas});
-        return '<div class="alert alert-danger">Error al cargar datos. Marcas: ' + (marcas ? 'OK' : 'FALLO') + ', Fallas: ' + (fallas ? 'OK' : 'FALLO') + '</div>';
+        return '<div class="alert alert-danger">Error al cargar datos. Marcas: ' + (marcas ? 'OK' : 'FALLO') + ', Fallas: ' + (fallas ? 'OK' : 'FALLO') + ', Técnicos: ' + (tecnicos ? 'OK' : 'FALLO') + '</div>';
     }
     
     console.log('Datos cargados correctamente, generando HTML');
     
     return `
-        <h2 class="mb-4">Nuevo Ingreso Técnico</h2>
-        
-        <div class="ingreso-wizard">
+        <div class="ingreso-page">
+            <h2 class="mb-4 ingreso-title">Nuevo Ingreso Técnico</h2>
+            
+            <div class="ingreso-wizard">
             <!-- PASO 1: DATOS DEL CLIENTE -->
             <div id="paso1" class="wizard-step active">
                 <div class="wizard-header">
@@ -694,6 +871,21 @@ async function loadIngresoForm() {
                             </div>
                             <input type="hidden" id="color">
                         </div>
+                        <div class="col-12 col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">IMEI *</label>
+                                <input type="text" class="form-control form-control-lg" id="imei" inputmode="numeric" pattern="[0-9]+" placeholder="Solo números" required>
+                            </div>
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <div class="mb-3">
+                                <label class="form-label">Técnico que repara *</label>
+                                <select class="form-control form-control-lg" id="tecnico_id" required>
+                                    <option value="">Seleccione un técnico</option>
+                                    ${Array.isArray(tecnicos) ? tecnicos.map(t => `<option value="${t.id}">${t.nombre}</option>`).join('') : ''}
+                                </select>
+                            </div>
+                        </div>
                     </div>
                     
                     <div class="wizard-nav mt-4">
@@ -715,55 +907,100 @@ async function loadIngresoForm() {
                 </div>
                 
                 <div class="wizard-content">
-                    <h5 class="mb-3">Estado Físico</h5>
+                    <h5 class="mb-3">Estado del Equipo</h5>
                     <div class="row mb-3">
-                        <div class="col-12 col-md-6 form-check mb-2">
-                            <input class="form-check-input" type="checkbox" id="estado_display">
-                            <label class="form-check-label" for="estado_display">
-                                Display Malo
-                            </label>
+                        <div class="col-12 col-md-6 mb-3">
+                            <label class="form-label">Apagado</label>
+                            <select class="form-control form-control-lg" id="estado_apagado_select">
+                                <option value="NO" selected>NO</option>
+                                <option value="SI">SI</option>
+                            </select>
                         </div>
-                        <div class="col-12 col-md-6 form-check mb-2">
-                            <input class="form-check-input" type="checkbox" id="estado_tactil">
-                            <label class="form-check-label" for="estado_tactil">
-                                Táctil Malo
-                            </label>
+                        <div class="col-12 col-md-6 mb-3">
+                            <label class="form-label">Garantía</label>
+                            <select class="form-control form-control-lg" id="garantia_select">
+                                <option value="NO" selected>NO</option>
+                                <option value="SI">SI</option>
+                            </select>
                         </div>
-                        <div class="col-12 col-md-6 form-check mb-2">
-                            <input class="form-check-input" type="checkbox" id="estado_botones">
-                            <label class="form-check-label" for="estado_botones">
-                                Botones Dañados
-                            </label>
+                        <div class="col-12 col-md-6 mb-3">
+                            <label class="form-label">Estuche</label>
+                            <select class="form-control form-control-lg" id="estuche_select">
+                                <option value="NO" selected>NO</option>
+                                <option value="SI">SI</option>
+                            </select>
                         </div>
-                        <div class="col-12 col-md-6 form-check mb-2">
-                            <input class="form-check-input" type="checkbox" id="estado_apagado">
-                            <label class="form-check-label" for="estado_apagado">
-                                Apagado / No Enciende
-                            </label>
+                        <div class="col-12 col-md-6 mb-3">
+                            <label class="form-label">Bandeja SIM (¿tiene?)</label>
+                            <select class="form-control form-control-lg" id="bandeja_sim_select">
+                                <option value="NO" selected>NO</option>
+                                <option value="SI">SI</option>
+                            </select>
                         </div>
-                        <div class="col-12 col-md-6 form-check mb-2">
-                            <input class="form-check-input" type="checkbox" id="tiene_clave" onchange="toggleClave()">
-                            <label class="form-check-label" for="tiene_clave">
-                                Tiene Clave
-                            </label>
+                        <div class="col-12 col-md-6 mb-3" id="colorBandejaDiv" style="display: none;">
+                            <label class="form-label">Color de Bandeja SIM</label>
+                            <input type="text" class="form-control form-control-lg" id="color_bandeja_sim" placeholder="Ej: Negro, Plateado">
+                        </div>
+                        <div class="col-12 col-md-6 mb-3">
+                            <label class="form-label">Visor o glass partido</label>
+                            <select class="form-control form-control-lg" id="visor_partido_select">
+                                <option value="NO" selected>NO</option>
+                                <option value="SI">SI</option>
+                            </select>
+                        </div>
+                        <div class="col-12 col-md-6 mb-3">
+                            <label class="form-label">Estado de botones</label>
+                            <select class="form-control form-control-lg" id="estado_botones_detalle">
+                                <option value="BUENOS COMPLETOS" selected>BUENOS COMPLETOS</option>
+                                <option value="REGULARES">REGULARES</option>
+                                <option value="NO TIENE">NO TIENE</option>
+                            </select>
+                        </div>
+                        <div class="col-12 col-md-6 mb-3">
+                            <label class="form-label">Tiene clave</label>
+                            <select class="form-control form-control-lg" id="tiene_clave" onchange="toggleClave()">
+                                <option value="NO" selected>NO</option>
+                                <option value="SI">SI</option>
+                            </select>
                         </div>
                     </div>
                     
                     <div class="mb-4" id="claveDiv" style="display: none;">
-                        <label class="form-label">Clave del Equipo</label>
-                        <input type="password" class="form-control form-control-lg" id="clave" placeholder="Ingrese la clave">
+                        <div class="row">
+                            <div class="col-12 col-md-4 mb-3">
+                                <label class="form-label">Tipo de clave</label>
+                                <select class="form-control form-control-lg" id="tipo_clave">
+                                    <option value="NUMERICA">NUMÉRICA</option>
+                                    <option value="ALFANUMERICA">ALFANUMÉRICA</option>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-8 mb-3">
+                                <label class="form-label">Clave del equipo</label>
+                                <input type="text" class="form-control form-control-lg" id="clave" placeholder="Ingrese la clave">
+                            </div>
+                        </div>
                     </div>
                     
                     <h5 class="mb-3">Fallas Reportadas</h5>
-                    <div class="row mb-3" id="fallasCheckbox">
-                        ${Array.isArray(fallas) ? fallas.map(f => 
-                            `<div class="col-12 col-md-6 form-check mb-2">
-                                <input class="form-check-input falla-checkbox" type="checkbox" value="${f.id}" id="falla_${f.id}">
-                                <label class="form-check-label" for="falla_${f.id}">
-                                    ${f.nombre}
-                                </label>
-                            </div>`
-                        ).join('') : ''}
+                    <div class="fallas-selector mb-3" id="fallasSelector">
+                        <div class="fallas-toolbar">
+                            <input type="text" class="form-control" id="fallasSearch" placeholder="Buscar falla...">
+                            <button type="button" class="btn btn-outline-primary btn-sm" id="fallasDropdownToggle" aria-label="Mostrar fallas">
+                                <i class="fas fa-chevron-down"></i>
+                            </button>
+                            <span class="fallas-count" id="fallasSelectedCount">0 seleccionadas</span>
+                        </div>
+                        <div class="fallas-dropdown" id="fallasDropdown">
+                            <div class="fallas-list" id="fallasCheckbox">
+                                ${Array.isArray(fallas) ? fallas.map((f) => 
+                                    `<label class="falla-item" data-name="${(f.nombre || '').toLowerCase()}" for="falla_${f.id}">
+                                        <input class="form-check-input falla-checkbox" type="checkbox" value="${f.id}" data-precio="${Number(f.precio_sugerido || 0)}" id="falla_${f.id}">
+                                        <span class="falla-label-text">${f.nombre}</span>
+                                        <span class="falla-price">${Number(f.precio_sugerido || 0) > 0 ? `$ ${Number(f.precio_sugerido).toLocaleString('es-CO')}` : '$ 0'}</span>
+                                    </label>`
+                                ).join('') : ''}
+                            </div>
+                        </div>
                     </div>
                     
                     <div class="wizard-nav">
@@ -786,15 +1023,15 @@ async function loadIngresoForm() {
                 
                 <div class="wizard-content">
                     <div class="mb-4">
-                        <label class="form-label">Falla General *</label>
-                        <textarea class="form-control form-control-lg" id="falla_general" rows="3" placeholder="Descripción de la falla reportada" required></textarea>
+                        <label class="form-label">Detalle del Ingreso *</label>
+                        <textarea class="form-control form-control-lg" id="falla_general" rows="3" placeholder="Ej: PANTALLA ROTA PERO CELULAR SUENA" required></textarea>
                     </div>
                     
                     <div class="mb-4">
                         <label class="form-label">Valor de Reparación</label>
                         <div class="input-group input-group-lg">
                             <span class="input-group-text">$</span>
-                            <input type="number" class="form-control" id="valor_reparacion" placeholder="0" min="0" step="1000">
+                            <input type="text" class="form-control" id="valor_reparacion" placeholder="0" inputmode="numeric" autocomplete="off">
                         </div>
                         <small class="text-muted">Dejar vacío para asignar después</small>
                     </div>
@@ -803,7 +1040,7 @@ async function loadIngresoForm() {
                         <label class="form-label">Notas Adicionales</label>
                         <textarea class="form-control form-control-lg" id="notas_adicionales" rows="2" placeholder="Notas internas o adicionales"></textarea>
                     </div>
-                    
+
                     <form id="ingresoForm" onsubmit="submitIngreso(event); return false;">
                         <div class="wizard-nav">
                             <button type="button" class="btn btn-secondary btn-lg me-2" onclick="prevWizardStep()">
@@ -866,7 +1103,7 @@ async function buscarClientes() {
                 <div class="d-flex w-100 justify-content-between">
                     <strong>${cliente.nombre} ${cliente.apellido}</strong>
                 </div>
-                <small>Cédula: ${cliente.cedula} | Tel: ${cliente.telefono || 'N/A'}</small>
+                <small>Cédula: ${cliente.cedula} | Tel: ${cliente.telefono || 'Sin dato'}</small>
             </button>
         `).join('');
         resultados.style.display = 'block';
@@ -880,7 +1117,10 @@ async function buscarClientes() {
 function seleccionarCliente(nombre, apellido, cedula, telefono, direccion) {
     document.getElementById('cliente_nombre').value = nombre;
     document.getElementById('cliente_apellido').value = apellido;
-    document.getElementById('cliente_cedula').value = cedula;
+    const cedulaInput = document.getElementById('cliente_cedula');
+    cedulaInput.value = cedula;
+    cedulaInput.dataset.selectedFromSearch = 'true';
+    cedulaInput.dataset.selectedCedulaNorm = normalizeCedula(cedula);
     document.getElementById('cliente_telefono').value = telefono;
     document.getElementById('cliente_direccion').value = direccion;
     
@@ -933,28 +1173,81 @@ async function submitIngreso(e) {
     const datos = {
         marca_id: parseInt(marcaValue),
         modelo_id: parseInt(modeloValue),
+        tecnico_id: parseInt(document.getElementById('tecnico_id').value),
         cliente_nombre: document.getElementById('cliente_nombre').value.toUpperCase(),
         cliente_apellido: document.getElementById('cliente_apellido').value.toUpperCase(),
         cliente_cedula: document.getElementById('cliente_cedula').value.toUpperCase(),
         cliente_telefono: document.getElementById('cliente_telefono').value.toUpperCase(),
         cliente_direccion: document.getElementById('cliente_direccion').value.toUpperCase(),
         color: document.getElementById('color').value.toUpperCase(),
+        imei: (document.getElementById('imei').value || '').trim(),
         falla_general: document.getElementById('falla_general').value.toUpperCase(),
         notas_adicionales: document.getElementById('notas_adicionales').value.toUpperCase(),
-        estado_display: document.getElementById('estado_display').checked,
-        estado_tactil: document.getElementById('estado_tactil').checked,
-        estado_botones: document.getElementById('estado_botones').checked,
-        estado_apagado: document.getElementById('estado_apagado').checked,
-        tiene_clave: document.getElementById('tiene_clave').checked,
+        estado_display: document.getElementById('visor_partido_select').value === 'SI',
+        estado_tactil: false,
+        estado_botones: document.getElementById('estado_botones_detalle').value !== 'BUENOS COMPLETOS',
+        estado_apagado: document.getElementById('estado_apagado_select').value === 'SI',
+        tiene_clave: document.getElementById('tiene_clave').value === 'SI',
+        tipo_clave: document.getElementById('tipo_clave')?.value || '',
         clave: document.getElementById('clave').value,
-        valor_reparacion: document.getElementById('valor_reparacion').value ? parseInt(document.getElementById('valor_reparacion').value) : null,
+        garantia: document.getElementById('garantia_select').value === 'SI',
+        estuche: document.getElementById('estuche_select').value === 'SI',
+        bandeja_sim: document.getElementById('bandeja_sim_select').value === 'SI',
+        color_bandeja_sim: (document.getElementById('color_bandeja_sim').value || '').toUpperCase(),
+        visor_partido: document.getElementById('visor_partido_select').value === 'SI',
+        estado_botones_detalle: document.getElementById('estado_botones_detalle').value,
+        valor_reparacion: parseMonetaryValue(document.getElementById('valor_reparacion').value),
         fallas_iniciales: fallasSeleccionadas
     };
+
+    if (datos.valor_reparacion === 0) {
+        const totalSugerido = Array.from(document.querySelectorAll('.falla-checkbox:checked'))
+            .reduce((sum, cb) => sum + Number(cb.dataset.precio || 0), 0);
+        datos.valor_reparacion = totalSugerido > 0 ? Math.round(totalSugerido) : 0;
+    }
+
+    clearWizardStepAlert(1);
+    clearWizardStepAlert(2);
+    clearWizardStepAlert(3);
+    clearWizardStepAlert(4);
     
     // Validar campos requeridos
-    if (!datos.marca_id || !datos.modelo_id || !datos.cliente_nombre || 
-        !datos.cliente_apellido || !datos.cliente_cedula) {
-        showAlert('Por favor complete todos los campos requeridos (Marca, Modelo, Nombre, Apellido, Cédula)', 'danger');
+    if (!datos.cliente_nombre || !datos.cliente_apellido || !datos.cliente_cedula) {
+        currentWizardStep = 1;
+        updateWizardDisplay();
+        showWizardStepAlert(1, 'Por favor complete los datos requeridos del cliente (Nombre, Apellido, Cédula)', 'danger');
+        isSubmittingIngreso = false;
+        return;
+    }
+
+    if (!datos.marca_id || !datos.modelo_id || !datos.tecnico_id) {
+        currentWizardStep = 2;
+        updateWizardDisplay();
+        showWizardStepAlert(2, 'Por favor seleccione Marca, Modelo y Técnico', 'danger');
+        isSubmittingIngreso = false;
+        return;
+    }
+
+    if (!datos.imei || !/^\d+$/.test(datos.imei)) {
+        currentWizardStep = 2;
+        updateWizardDisplay();
+        showWizardStepAlert(2, 'El IMEI es obligatorio y solo debe contener números', 'danger');
+        isSubmittingIngreso = false;
+        return;
+    }
+
+    if (!datos.fallas_iniciales.length) {
+        currentWizardStep = 3;
+        updateWizardDisplay();
+        showWizardStepAlert(3, 'Debe seleccionar al menos una falla', 'danger');
+        isSubmittingIngreso = false;
+        return;
+    }
+
+    if (!datos.falla_general) {
+        currentWizardStep = 4;
+        updateWizardDisplay();
+        showWizardStepAlert(4, 'Por favor complete el Detalle del Ingreso', 'danger');
         isSubmittingIngreso = false;
         return;
     }
@@ -970,18 +1263,29 @@ async function submitIngreso(e) {
         showLoading(false);
         
         if (!response) {
-            showAlert('Error de conexión con el servidor', 'danger');
+            showWizardStepAlert(4, 'Error de conexión con el servidor', 'danger');
             return;
         }
         
         if (response.error) {
-            showAlert('Error: ' + response.error, 'danger');
+            if (response.duplicate && response.ingreso_existente?.numero_ingreso) {
+                const mismatchHint = response.coincide_nombre_apellido === false
+                    ? ' (ojo: nombre/apellido no coinciden con el registro existente)'
+                    : '';
+                showWizardStepAlert(
+                    4,
+                    `Cliente ya existe por cédula. Último ingreso: N° ${response.ingreso_existente.numero_ingreso}${mismatchHint}.`,
+                    'warning'
+                );
+                return;
+            }
+            showWizardStepAlert(4, 'Error: ' + response.error, 'danger');
             return;
         }
         
         if (response.numero_ingreso || response.id) {
             const numeroIngreso = response.numero_ingreso || response.id;
-            showAlert(`¡Ingreso creado exitosamente! Número: ${numeroIngreso}`, 'success');
+            showWizardStepAlert(4, `¡Ingreso creado exitosamente! Número: ${numeroIngreso}`, 'success');
             document.getElementById('ingresoForm').reset();
 
             if (response.id) {
@@ -993,12 +1297,12 @@ async function submitIngreso(e) {
                 loadPage('registros');
             }, 1500);
         } else {
-            showAlert('Error: Respuesta inesperada del servidor', 'danger');
+            showWizardStepAlert(4, 'Error: Respuesta inesperada del servidor', 'danger');
         }
     } catch (error) {
         console.error('Error en submitIngreso:', error);
         showLoading(false);
-        showAlert('Error al crear ingreso: ' + error.message, 'danger');
+        showWizardStepAlert(4, 'Error al crear ingreso: ' + error.message, 'danger');
     } finally {
         isSubmittingIngreso = false;
     }
@@ -1067,8 +1371,9 @@ async function loadRegistros() {
                             <th>Cliente</th>
                             <th>Teléfono</th>
                             <th>Dirección</th>
-                            <th>Fecha</th>
+                            <th>Fecha/Hora</th>
                             <th>Marca</th>
+                            <th>Técnico</th>
                             <th>Estado</th>
                             <th>Valor</th>
                             <th>Acciones</th>
@@ -1079,12 +1384,13 @@ async function loadRegistros() {
                             try {
                                 return `
                             <tr>
-                                <td><strong>${ingreso.numero_ingreso || 'N/A'}</strong></td>
+                                <td><strong>${ingreso.numero_ingreso || 'Sin dato'}</strong></td>
                                 <td>${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}</td>
-                                <td>${ingreso.cliente_telefono || 'N/A'}</td>
-                                <td>${ingreso.cliente_direccion || 'N/A'}</td>
-                                <td>${ingreso.fecha_ingreso ? new Date(ingreso.fecha_ingreso).toLocaleDateString() : 'N/A'}</td>
-                                <td>${ingreso.marca || 'N/A'}</td>
+                                <td>${ingreso.cliente_telefono || 'Sin dato'}</td>
+                                <td>${ingreso.cliente_direccion || 'Sin dato'}</td>
+                                <td>${ingreso.fecha_ingreso ? new Date(ingreso.fecha_ingreso).toLocaleString('es-ES') : 'Sin dato'}</td>
+                                <td>${ingreso.marca || 'Sin dato'}</td>
+                                <td>${ingreso.tecnico || 'Sin asignar'}</td>
                                 <td>
                                     <span class="badge bg-${getStatusColor(ingreso.estado_ingreso)}">
                                         ${ingreso.estado_ingreso || 'pendiente'}
@@ -1955,6 +2261,8 @@ async function loadAdminFallas() {
 
 async function loadAdminConfig() {
     const config = await apiCall('/admin/configuracion');
+    const logoNavbarActual = config.logo_navbar_url?.valor || config.logo_url?.valor;
+    const logoTicketActual = config.logo_ticket_url?.valor || config.logo_url?.valor;
     
     return `
         <div class="card p-4">
@@ -1986,9 +2294,15 @@ async function loadAdminConfig() {
                 </div>
                 
                 <div class="mb-3">
-                    <label class="form-label">Logo del Negocio (PNG o JPG, máx 5MB)</label>
-                    <input type="file" class="form-control" id="logo_file" accept="image/png,image/jpeg,image/jpg">
-                    ${config.logo_url?.valor ? `<div class="mt-2"><small class="text-muted">Logo actual:</small><br><img src="${config.logo_url.valor}" alt="Logo actual" style="max-height: 80px; max-width: 220px; border: 1px solid #ddd; padding: 4px; border-radius: 4px; margin-top: 5px;"></div>` : '<small class="text-muted d-block mt-1">No hay logo cargado aún</small>'}
+                    <label class="form-label">Logo para Barra (Navbar) (PNG o JPG, máx 5MB)</label>
+                    <input type="file" class="form-control" id="logo_navbar_file" accept="image/png,image/jpeg,image/jpg">
+                    ${logoNavbarActual ? `<div class="mt-2"><small class="text-muted">Logo navbar actual:</small><br><img src="${logoNavbarActual}" alt="Logo navbar actual" style="max-height: 80px; max-width: 260px; border: 1px solid #ddd; padding: 4px; border-radius: 4px; margin-top: 5px;"></div>` : '<small class="text-muted d-block mt-1">No hay logo de barra cargado aún</small>'}
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Logo para Ticket (impresión) (PNG o JPG, máx 5MB)</label>
+                    <input type="file" class="form-control" id="logo_ticket_file" accept="image/png,image/jpeg,image/jpg">
+                    ${logoTicketActual ? `<div class="mt-2"><small class="text-muted">Logo ticket actual:</small><br><img src="${logoTicketActual}" alt="Logo ticket actual" style="max-height: 80px; max-width: 260px; border: 1px solid #ddd; padding: 4px; border-radius: 4px; margin-top: 5px;"></div>` : '<small class="text-muted d-block mt-1">No hay logo de ticket cargado aún</small>'}
                 </div>
                 
                 <button type="submit" class="btn btn-primary">
@@ -2001,70 +2315,92 @@ async function loadAdminConfig() {
 
 async function submitConfig(e) {
     e.preventDefault();
-    
-    const logoFileInput = document.getElementById('logo_file');
-    const hasLogoFile = logoFileInput && logoFileInput.files && logoFileInput.files.length > 0;
-    
-    // Si hay archivo de logo, subirlo primero
-    if (hasLogoFile) {
-        const file = logoFileInput.files[0];
-        console.log('=== DEBUG LOGO UPLOAD ===');
-        console.log('File:', file);
-        console.log('File name:', file.name);
-        console.log('File size:', file.size);
-        console.log('File type:', file.type);
-        console.log('Token:', token ? 'Token presente' : 'Token AUSENTE');
-        console.log('API_BASE:', API_BASE);
-        
-        // Validar tipo de archivo
+
+    const logoNavbarInput = document.getElementById('logo_navbar_file');
+    const logoTicketInput = document.getElementById('logo_ticket_file');
+
+    const uploadLogo = async (file, targetLabel) => {
         if (!file.name.match(/\.(jpg|jpeg|png)$/i)) {
-            showAlert('Por favor selecciona un archivo PNG o JPG', 'warning');
-            return;
+            showAlert(`Logo de ${targetLabel}: selecciona un archivo PNG o JPG`, 'warning');
+            return false;
         }
-        
-        // Validar tamaño (máximo 5MB)
+
         if (file.size > 5 * 1024 * 1024) {
-            showAlert('El archivo es muy grande. Máximo 5MB', 'warning');
-            return;
+            showAlert(`Logo de ${targetLabel}: el archivo es muy grande (máx 5MB)`, 'warning');
+            return false;
         }
-        
-        showAlert('Subiendo logo...', 'info');
-        
+
         const formData = new FormData();
         formData.append('logo', file);
-        console.log('FormData creado, archivo añadido con clave "logo"');
-        
+
         try {
-            const url = `${API_BASE}/admin/config/logo`;
-            console.log('URL completa:', url);
-            console.log('Enviando petición...');
-            
-            const logoResponse = await fetch(url, {
+            const logoResponse = await fetch(`${API_BASE}/admin/config/logo/${targetLabel}`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`
                 },
                 body: formData
             });
-            
-            console.log('Respuesta recibida. Status:', logoResponse.status);
-            console.log('Response OK:', logoResponse.ok);
-            
-            if (!logoResponse.ok) {
-                const errorData = await logoResponse.json();
-                console.log('Error data:', errorData);
-                showAlert(`Error al subir logo: ${errorData.error}`, 'danger');
-                return;
+
+            const contentType = logoResponse.headers.get('content-type') || '';
+            const rawBody = await logoResponse.text();
+
+            let parsedBody = null;
+            if (contentType.includes('application/json') || rawBody.trim().startsWith('{')) {
+                try {
+                    parsedBody = JSON.parse(rawBody);
+                } catch (_) {
+                    parsedBody = null;
+                }
             }
-            
-            const successData = await logoResponse.json();
-            console.log('Success data:', successData);
-            showAlert('Logo subido exitosamente', 'success');
+
+            if (!logoResponse.ok) {
+                const backendError = parsedBody?.error;
+                const looksLikeHtml = rawBody.trim().startsWith('<');
+
+                if (logoResponse.status === 404 || logoResponse.status === 405) {
+                    showAlert(`Error al subir logo de ${targetLabel}: el backend no reconoce esta ruta. Reinicia backend para aplicar los cambios de logos independientes.`, 'danger');
+                    return false;
+                }
+
+                if (backendError) {
+                    showAlert(`Error al subir logo de ${targetLabel}: ${backendError}`, 'danger');
+                    return false;
+                }
+
+                if (looksLikeHtml) {
+                    showAlert(`Error al subir logo de ${targetLabel}: el backend devolvió HTML en vez de JSON (status ${logoResponse.status}).`, 'danger');
+                    return false;
+                }
+
+                showAlert(`Error al subir logo de ${targetLabel}: status ${logoResponse.status}`, 'danger');
+                return false;
+            }
+
+            return true;
         } catch (error) {
-            console.error('Excepción al subir logo:', error);
-            showAlert(`Error de red al subir logo: ${error.message}`, 'danger');
-            return;
+            showAlert(`Error de red al subir logo de ${targetLabel}: ${error.message}`, 'danger');
+            return false;
         }
+    };
+
+    const hasNavbarLogo = logoNavbarInput && logoNavbarInput.files && logoNavbarInput.files.length > 0;
+    const hasTicketLogo = logoTicketInput && logoTicketInput.files && logoTicketInput.files.length > 0;
+
+    if (hasNavbarLogo || hasTicketLogo) {
+        showAlert('Subiendo logos...', 'info');
+
+        if (hasNavbarLogo) {
+            const okNavbar = await uploadLogo(logoNavbarInput.files[0], 'navbar');
+            if (!okNavbar) return;
+        }
+
+        if (hasTicketLogo) {
+            const okTicket = await uploadLogo(logoTicketInput.files[0], 'ticket');
+            if (!okTicket) return;
+        }
+
+        loadNavbarBrand();
     }
     
     // Guardar configuración del negocio
@@ -2081,6 +2417,7 @@ async function submitConfig(e) {
         
         if (response.success) {
             showAlert('Configuración guardada exitosamente', 'success');
+            loadNavbarBrand();
             // Recargar el panel de administración para mostrar los valores actualizados
             setTimeout(() => {
                 loadPage('admin');
@@ -2101,40 +2438,97 @@ async function verDetalles(ingresoId) {
         return;
     }
     
+    const clean = (value, fallback = 'Sin dato') => {
+        if (value === null || value === undefined) return fallback;
+        const text = String(value).trim();
+        return text ? text : fallback;
+    };
+    const yesNo = (value) => value ? 'SI' : 'NO';
+    const claveTexto = response.tiene_clave
+        ? `${clean(response.tipo_clave, '') ? `${clean(response.tipo_clave, '')}: ` : ''}${clean(response.clave, 'Sin dato')}`
+        : 'NO APLICA';
+    const fechaIngreso = response.fecha_ingreso
+        ? new Date(response.fecha_ingreso).toLocaleString('es-ES')
+        : 'Sin dato';
+    const fechaEntrega = response.fecha_entrega
+        ? new Date(response.fecha_entrega).toLocaleString('es-ES')
+        : 'Sin dato';
+
     const mainContent = document.getElementById('mainContent');
     mainContent.innerHTML = `
-        <h2 class="mb-4">Detalles del Ingreso: ${response.numero_ingreso}</h2>
-        
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2 class="mb-0">Detalles del Ingreso: <strong>${response.numero_ingreso}</strong></h2>
+            <button class="btn btn-secondary" onclick="loadPage('registros')">
+                <i class="fas fa-arrow-left me-2"></i>Volver
+            </button>
+        </div>
+
         <div class="row">
-            <div class="col-md-6">
+            <div class="col-lg-6">
                 <div class="card mb-3">
                     <div class="card-header bg-primary text-white">
                         <h5 class="mb-0">Datos del Cliente</h5>
                     </div>
                     <div class="card-body">
-                        <p><strong>Nombre:</strong> ${response.cliente_nombre} ${response.cliente_apellido}</p>
-                        <p><strong>Cédula:</strong> ${response.cliente_cedula}</p>
-                        <p><strong>Teléfono:</strong> ${response.cliente_telefono || 'N/A'}</p>
-                        <p><strong>Dirección:</strong> ${response.cliente_direccion || 'N/A'}</p>
+                        <p><strong>Nombre:</strong> ${clean(response.cliente_nombre)} ${clean(response.cliente_apellido)}</p>
+                        <p><strong>Cédula:</strong> ${clean(response.cliente_cedula)}</p>
+                        <p><strong>Teléfono:</strong> ${clean(response.cliente_telefono)}</p>
+                        <p><strong>Dirección:</strong> ${clean(response.cliente_direccion)}</p>
                     </div>
                 </div>
             </div>
-            
-            <div class="col-md-6">
+
+            <div class="col-lg-6">
                 <div class="card mb-3">
                     <div class="card-header bg-info text-white">
                         <h5 class="mb-0">Datos del Equipo</h5>
                     </div>
                     <div class="card-body">
-                        <p><strong>Marca:</strong> ${response.marca}</p>
-                        <p><strong>Modelo:</strong> ${response.modelo}</p>
-                        <p><strong>Color:</strong> ${response.color || 'N/A'}</p>
-                        <p><strong>Estado:</strong> <span class="badge bg-${getStatusColor(response.estado_ingreso)}">${response.estado_ingreso}</span></p>
+                        <p><strong>Marca:</strong> ${clean(response.marca)}</p>
+                        <p><strong>Modelo:</strong> ${clean(response.modelo)}</p>
+                        <p><strong>Color:</strong> ${clean(response.color)}</p>
+                        <p><strong>IMEI:</strong> ${clean(response.imei)}</p>
+                        <p><strong>Clave:</strong> ${claveTexto}</p>
+                        <p><strong>Estado:</strong> <span class="badge bg-${getStatusColor(response.estado_ingreso)}">${clean(response.estado_ingreso)}</span></p>
                     </div>
                 </div>
             </div>
         </div>
-        
+
+        <div class="row">
+            <div class="col-lg-6">
+                <div class="card mb-3">
+                    <div class="card-header bg-secondary text-white">
+                        <h5 class="mb-0">Condición del Ingreso</h5>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>Apagado:</strong> ${yesNo(response.estado_apagado)}</p>
+                        <p><strong>Garantía:</strong> ${yesNo(response.garantia)}</p>
+                        <p><strong>Estuche:</strong> ${yesNo(response.estuche)}</p>
+                        <p><strong>Bandeja SIM:</strong> ${yesNo(response.bandeja_sim)}${response.bandeja_sim ? ` (${clean(response.color_bandeja_sim, '')})` : ''}</p>
+                        <p><strong>Visor/Glass partido:</strong> ${yesNo(response.visor_partido)}</p>
+                        <p><strong>Botones:</strong> ${clean(response.estado_botones_detalle)}</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div class="card mb-3">
+                    <div class="card-header bg-dark text-white">
+                        <h5 class="mb-0">Estado y Fechas</h5>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>Fecha de ingreso:</strong> ${fechaIngreso}</p>
+                        <p><strong>Fecha de entrega:</strong> ${fechaEntrega}</p>
+                        <p><strong>Estado del pago:</strong> ${clean(response.estado_pago)}</p>
+                        <p><strong>Valor total:</strong> <strong>$${Number(response.valor_total || 0).toLocaleString('es-CO')}</strong></p>
+                        <p><strong>Empleado:</strong> ${clean(response.empleado)}</p>
+                        <p><strong>Técnico asignado:</strong> ${clean(response.tecnico)}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card mb-3">
             <div class="card-header bg-warning">
                 <h5 class="mb-0">Fallas Diagnosticadas</h5>
@@ -2152,9 +2546,9 @@ async function verDetalles(ingresoId) {
                         <tbody>
                             ${response.fallas.map(f => `
                                 <tr>
-                                    <td>${f.nombre}</td>
-                                    <td>$${f.valor_reparacion || 0}</td>
-                                    <td><span class="badge bg-info">${f.estado_falla}</span></td>
+                                    <td>${clean(f.nombre)}</td>
+                                    <td>$${Number(f.valor_reparacion || 0).toLocaleString('es-CO')}</td>
+                                    <td><span class="badge bg-info">${clean(f.estado_falla)}</span></td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -2162,16 +2556,24 @@ async function verDetalles(ingresoId) {
                 ` : '<p class="text-muted">Sin fallas registradas</p>'}
             </div>
         </div>
-        
-        <div class="row">
-            <div class="col-md-12">
-                <button class="btn btn-primary" onclick="loadPage('registros')">
-                    <i class="fas fa-arrow-left me-2"></i> Volver
-                </button>
-                <button class="btn btn-success" onclick="printTicket(${ingresoId})">
-                    <i class="fas fa-print me-2"></i> Imprimir Ticket
-                </button>
+
+        <div class="card mb-4">
+            <div class="card-header bg-light">
+                <h5 class="mb-0">Detalle y Notas</h5>
             </div>
+            <div class="card-body">
+                <p><strong>Detalle del ingreso:</strong> ${clean(response.falla_general)}</p>
+                <p class="mb-0"><strong>Notas adicionales:</strong> ${clean(response.notas_adicionales)}</p>
+            </div>
+        </div>
+
+        <div class="d-flex gap-2">
+            <button class="btn btn-primary" onclick="loadPage('registros')">
+                <i class="fas fa-arrow-left me-2"></i> Volver
+            </button>
+            <button class="btn btn-success" onclick="printTicket(${ingresoId})">
+                <i class="fas fa-print me-2"></i> Imprimir Ticket
+            </button>
         </div>
     `;
 }
@@ -2457,13 +2859,33 @@ function simulatePrint(ticketData) {
     const nombreNegocio = negocio.nombre_negocio || 'CELUPRO';
     const telefonoNegocio = negocio.telefono_negocio || '';
     const direccionNegocio = negocio.direccion_negocio || negocio.email_negocio || '';
-    // Convertir URL relativa del logo a absoluta para que funcione en iframe
-    const logoUrl = negocio.logo_url ? `${window.location.origin}${negocio.logo_url}` : '';
+    const logoTicketPath = negocio.logo_ticket_url || negocio.logo_url || '';
+    const withCacheBuster = (url) => `${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`;
+    const logoUrl = logoTicketPath
+        ? withCacheBuster(logoTicketPath.startsWith('http') ? logoTicketPath : `${window.location.origin}${logoTicketPath}`)
+        : '';
+    const clean = (value) => {
+        if (value === null || value === undefined) return '';
+        const text = String(value).trim();
+        return text === 'N/A' ? '' : text;
+    };
+    const cleanFallaName = (value) => clean(value).replace(/\s*\(\$\s*[\d\.,]+\)\s*$/g, '').trim();
+    const yesNo = (value) => value ? 'SI' : 'NO';
+    const fechaSistema = clean(ingreso.fecha_ingreso)
+        ? new Date(ingreso.fecha_ingreso).toLocaleString('es-CO')
+        : new Date().toLocaleString('es-CO');
+    const clienteNombre = `${clean(ingreso.cliente_nombre)} ${clean(ingreso.cliente_apellido)}`.trim();
+    const equipoTexto = `${clean(ingreso.marca)} ${clean(ingreso.modelo)}`.trim();
+    const estadoBotonesDetalle = clean(ingreso.estado_botones_detalle) || (ingreso.estado_botones ? 'REGULARES' : 'BUENOS COMPLETOS');
+    const tipoClave = clean(ingreso.tipo_clave);
+    const claveTexto = ingreso.tiene_clave ? `${tipoClave ? `${tipoClave}: ` : ''}${clean(ingreso.clave)}` : 'NO APLICA';
+    const bandejaSimTexto = yesNo(ingreso.bandeja_sim);
+    const colorBandejaSimTexto = ingreso.bandeja_sim ? clean(ingreso.color_bandeja_sim) : '';
     const valorTotal = Number(ingreso.valor_total || 0);
     const fallas = Array.isArray(ingreso.fallas) ? ingreso.fallas : [];
     const fallasTexto = fallas.length
-        ? fallas.map(f => `• ${f.nombre || 'Falla'}${f.valor_reparacion ? ` ($ ${Number(f.valor_reparacion).toLocaleString('es-CO')})` : ''}`).join('<br>')
-        : (ingreso.falla_general || 'Sin detalle');
+        ? fallas.map(f => `• ${cleanFallaName(f.nombre) || 'Falla'}`).join('<br>')
+        : clean(ingreso.falla_general);
 
     const html = `
         <html>
@@ -2528,26 +2950,55 @@ function simulatePrint(ticketData) {
                 <div class="numero">Ingreso #${ticketData.numero_ingreso}</div>
 
                 <div class="section-title">CLIENTE</div>
-                <div><strong>${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}</strong></div>
-                <div>Tel: ${ingreso.cliente_telefono || 'N/A'}</div>
-                <div>Dir: ${ingreso.cliente_direccion || 'N/A'}</div>
+                <div><strong>${clienteNombre}</strong></div>
+                <div>Cédula: ${clean(ingreso.cliente_cedula)}</div>
+                <div>Tel: ${clean(ingreso.cliente_telefono)}</div>
+                <div>Dir: ${clean(ingreso.cliente_direccion)}</div>
+                <div>Fecha/Hora: ${fechaSistema}</div>
 
                 <div class="section-title">EQUIPO</div>
-                <div>${ingreso.marca || ''} ${ingreso.modelo || ''}</div>
-                <div>Color: ${ingreso.color || 'N/A'}</div>
+                <div>${equipoTexto}</div>
+                <div>Color: ${clean(ingreso.color)}</div>
+                <div>IMEI: ${clean(ingreso.imei)}</div>
+                <div>Clave: ${claveTexto}</div>
+                <div>Garantía: ${yesNo(ingreso.garantia)}</div>
+                <div>Apagado: ${yesNo(ingreso.estado_apagado)}</div>
+                <div>Estuche: ${yesNo(ingreso.estuche)}</div>
+                <div>Bandeja SIM: ${bandejaSimTexto}${colorBandejaSimTexto ? ` (${colorBandejaSimTexto})` : ''}</div>
+                <div>Visor/Glass partido: ${yesNo(ingreso.visor_partido || ingreso.estado_display)}</div>
+                <div>Botones: ${estadoBotonesDetalle}</div>
+                <div><strong>Detalle:</strong> ${clean(ingreso.falla_general)}</div>
                 <div>Valor reparación: $ ${valorTotal.toLocaleString('es-CO')}</div>
+                <div class="section-title">Fallas seleccionadas</div>
+                <div class="small">${fallasTexto}</div>
+                <div class="section-title">Comentarios</div>
+                <div class="small"><strong>PANTALLAS NO TIENEN GARANTIA YA QUE ES UN CRISTAL Y DEPENDE DEL CUIDADOS DEL CLIENTE.</strong></div>
+                <div class="small"><strong>LA CONTRASEÑA SE SOLICITA PARA HACER REVISION DE SU TELEFONO Y ASI GARANTIZAR QUE SU FUNCIONAMIENTO QUEDÓ EN OPTIMAS CONDICIONES.</strong></div>
+                <div class="small"><strong>PASADOS 60 DIAS NO SE RESPONDE POR EQUIPOS ABANDONADOS.</strong></div>
 
                 <div class="line"></div>
-                <div class="center small"><strong>Después de 60 días no se responde</strong></div>
-                <div class="center small"><strong>por equipos abandonados.</strong></div>
                 <div class="line"></div>
 
                 <div class="section-title">COPIA TÉCNICO</div>
-                <div>${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}</div>
-                <div>Tel: ${ingreso.cliente_telefono || 'N/A'}</div>
-                <div>Equipo: ${ingreso.marca || ''} ${ingreso.modelo || ''}</div>
+                <div><strong>${clienteNombre}</strong></div>
+                <div>Cédula: ${clean(ingreso.cliente_cedula)}</div>
+                <div>Tel: ${clean(ingreso.cliente_telefono)}</div>
+                <div>Dir: ${clean(ingreso.cliente_direccion)}</div>
+                <div>Fecha/Hora: ${fechaSistema}</div>
+                <div>Equipo: ${equipoTexto}</div>
+                <div>Color: ${clean(ingreso.color)}</div>
+                <div>IMEI: ${clean(ingreso.imei)}</div>
+                <div>Clave: ${claveTexto}</div>
+                <div>Garantía: ${yesNo(ingreso.garantia)}</div>
+                <div>Apagado: ${yesNo(ingreso.estado_apagado)}</div>
+                <div>Estuche: ${yesNo(ingreso.estuche)}</div>
+                <div>Bandeja SIM: ${bandejaSimTexto}${colorBandejaSimTexto ? ` (${colorBandejaSimTexto})` : ''}</div>
+                <div>Visor/Glass partido: ${yesNo(ingreso.visor_partido || ingreso.estado_display)}</div>
+                <div>Botones: ${estadoBotonesDetalle}</div>
                 <div>Valor: $ ${valorTotal.toLocaleString('es-CO')}</div>
-                <div class="section-title">Detalles:</div>
+                <div class="section-title">Detalle:</div>
+                <div class="small">${clean(ingreso.falla_general)}</div>
+                <div class="section-title">Fallas seleccionadas:</div>
                 <div class="small">${fallasTexto}</div>
 
                 <div class="line"></div>
@@ -3697,7 +4148,49 @@ async function submitQuickNewUser(event) {
 // ===== WIZARD FUNCTIONS =====
 let currentWizardStep = 1;
 
-function nextWizardStep() {
+function showWizardStepAlert(step, message, type = 'warning') {
+    const paso = document.getElementById(`paso${step}`);
+    if (!paso) {
+        showAlert(message, type);
+        return;
+    }
+
+    const wizardContent = paso.querySelector('.wizard-content');
+    if (!wizardContent) {
+        showAlert(message, type);
+        return;
+    }
+
+    let alertDiv = wizardContent.querySelector('.wizard-inline-alert');
+    if (!alertDiv) {
+        alertDiv = document.createElement('div');
+        alertDiv.className = `alert alert-${type} alert-dismissible fade show wizard-inline-alert mb-4`;
+        alertDiv.setAttribute('role', 'alert');
+        wizardContent.prepend(alertDiv);
+    }
+
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show wizard-inline-alert mb-4`;
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    `;
+}
+
+function clearWizardStepAlert(step) {
+    const paso = document.getElementById(`paso${step}`);
+    if (!paso) return;
+
+    const alertDiv = paso.querySelector('.wizard-inline-alert');
+    if (alertDiv) {
+        alertDiv.remove();
+    }
+}
+
+function normalizeCedula(cedula) {
+    return String(cedula || '').toUpperCase().replace(/[.\-\s]/g, '');
+}
+
+async function nextWizardStep() {
     if (currentWizardStep === 1) {
         // Validar paso 1: Datos del cliente
         const nombre = document.getElementById('cliente_nombre')?.value.trim();
@@ -3705,21 +4198,56 @@ function nextWizardStep() {
         const cedula = document.getElementById('cliente_cedula')?.value.trim();
         
         if (!nombre || !apellido || !cedula) {
-            showAlert('Por favor complete los datos requeridos del cliente (Nombre, Apellido, Cédula)', 'warning');
+            showWizardStepAlert(1, 'Por favor complete los datos requeridos del cliente (Nombre, Apellido, Cédula)', 'warning');
             return;
         }
+
+        try {
+            const cedulaNormalizada = normalizeCedula(cedula);
+            const cedulaInput = document.getElementById('cliente_cedula');
+            const selectedFromSearch = cedulaInput?.dataset?.selectedFromSearch === 'true';
+            const selectedCedulaNorm = cedulaInput?.dataset?.selectedCedulaNorm || '';
+            const isSelectedExistingClient = selectedFromSearch && selectedCedulaNorm === cedulaNormalizada;
+            const response = await apiCall(`/clientes/buscar?q=${encodeURIComponent(cedula)}`);
+
+            const clientes = Array.isArray(response?.data) ? response.data : [];
+            const duplicado = clientes.find((cliente) => normalizeCedula(cliente.cedula) === cedulaNormalizada);
+
+            if (duplicado && !isSelectedExistingClient) {
+                const nombreDigitado = `${nombre} ${apellido}`.trim().toUpperCase();
+                const nombreExistente = `${duplicado.nombre || ''} ${duplicado.apellido || ''}`.trim().toUpperCase();
+                const mismatchHint = nombreExistente && nombreExistente !== nombreDigitado
+                    ? ` Ojo: registrado como "${nombreExistente}".`
+                    : '';
+
+                showWizardStepAlert(1, `Esta cédula ya existe en el sistema. Selecciona el cliente desde "Buscar Cliente Existente" o cambia la cédula.${mismatchHint}`, 'warning');
+                return;
+            }
+        } catch (error) {
+            console.error('Error validando cédula duplicada en paso 1:', error);
+        }
+
+        clearWizardStepAlert(1);
         currentWizardStep = 2;
     } else if (currentWizardStep === 2) {
         // Validar paso 2: Datos del equipo
         const marca = document.getElementById('marca_id')?.value;
         const modelo = document.getElementById('modelo_id')?.value;
+        const imei = document.getElementById('imei')?.value.trim();
         
-        if (!marca || !modelo) {
-            showAlert('Por favor seleccione Marca y Modelo', 'warning');
+        if (!marca || !modelo || !imei || !/^\d+$/.test(imei)) {
+            showWizardStepAlert(2, 'Complete Marca, Modelo e IMEI (solo números)', 'warning');
             return;
         }
+        clearWizardStepAlert(2);
         currentWizardStep = 3;
     } else if (currentWizardStep === 3) {
+        const fallasSeleccionadas = document.querySelectorAll('.falla-checkbox:checked').length;
+        if (!fallasSeleccionadas) {
+            showWizardStepAlert(3, 'Debe seleccionar al menos una falla', 'warning');
+            return;
+        }
+        clearWizardStepAlert(3);
         currentWizardStep = 4;
     }
     
@@ -3773,4 +4301,90 @@ function selectColor(btn, colorName) {
     
     // Guardar valor en el input hidden
     document.getElementById('color').value = colorName;
+}
+
+function toggleClave() {
+    const tieneClaveSelect = document.getElementById('tiene_clave');
+    const claveDiv = document.getElementById('claveDiv');
+    if (!tieneClaveSelect || !claveDiv) return;
+    claveDiv.style.display = tieneClaveSelect.value === 'SI' ? 'block' : 'none';
+}
+
+function toggleBandejaSimColor() {
+    const bandejaSelect = document.getElementById('bandeja_sim_select');
+    const colorDiv = document.getElementById('colorBandejaDiv');
+    if (!bandejaSelect || !colorDiv) return;
+    colorDiv.style.display = bandejaSelect.value === 'SI' ? 'block' : 'none';
+}
+
+function syncValorReparacionFromFallas() {
+    const valorInput = document.getElementById('valor_reparacion');
+    if (!valorInput) return;
+
+    const totalSugerido = Array.from(document.querySelectorAll('.falla-checkbox:checked'))
+        .reduce((sum, cb) => sum + Number(cb.dataset.precio || 0), 0);
+
+    valorInput.value = totalSugerido > 0 ? formatNumberCO(Math.round(totalSugerido)) : '';
+}
+
+function parseMonetaryValue(value) {
+    const digitsOnly = String(value || '').replace(/\D/g, '');
+    return digitsOnly ? parseInt(digitsOnly, 10) : 0;
+}
+
+function formatNumberCO(value) {
+    return Number(value || 0).toLocaleString('es-CO');
+}
+
+function updateFallasSelectedCount() {
+    const countEl = document.getElementById('fallasSelectedCount');
+    if (!countEl) return;
+
+    const selectedCount = document.querySelectorAll('.falla-checkbox:checked').length;
+    const texto = selectedCount === 1 ? '1 seleccionada' : `${selectedCount} seleccionadas`;
+    countEl.textContent = texto;
+}
+
+function filterFallasList() {
+    const searchInput = document.getElementById('fallasSearch');
+    const query = (searchInput?.value || '').trim().toLowerCase();
+    const items = document.querySelectorAll('#fallasCheckbox .falla-item');
+
+    items.forEach(item => {
+        const name = item.getAttribute('data-name') || '';
+        item.style.display = name.includes(query) ? '' : 'none';
+    });
+}
+
+function openFallasDropdown() {
+    const dropdown = document.getElementById('fallasDropdown');
+    const toggle = document.getElementById('fallasDropdownToggle');
+    if (!dropdown) return;
+    dropdown.classList.add('show');
+    if (toggle) {
+        toggle.classList.add('active');
+        toggle.innerHTML = '<i class="fas fa-chevron-up"></i>';
+    }
+}
+
+function closeFallasDropdown() {
+    const dropdown = document.getElementById('fallasDropdown');
+    const toggle = document.getElementById('fallasDropdownToggle');
+    if (!dropdown) return;
+    dropdown.classList.remove('show');
+    if (toggle) {
+        toggle.classList.remove('active');
+        toggle.innerHTML = '<i class="fas fa-chevron-down"></i>';
+    }
+}
+
+function toggleFallasDropdown() {
+    const dropdown = document.getElementById('fallasDropdown');
+    if (!dropdown) return;
+
+    if (dropdown.classList.contains('show')) {
+        closeFallasDropdown();
+    } else {
+        openFallasDropdown();
+    }
 }

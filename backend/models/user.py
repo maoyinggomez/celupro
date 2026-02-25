@@ -27,6 +27,13 @@ class User:
         query = "SELECT id, usuario, nombre, rol, fecha_creacion FROM usuarios WHERE activo = 1 ORDER BY nombre"
         results = db.execute_query(query)
         return [dict(row) for row in results]
+
+    @staticmethod
+    def get_tecnicos():
+        """Obtiene técnicos activos"""
+        query = "SELECT id, nombre FROM usuarios WHERE activo = 1 AND rol = 'tecnico' ORDER BY nombre"
+        results = db.execute_query(query)
+        return [dict(row) for row in results]
     
     @staticmethod
     def create(usuario, contraseña, nombre, rol):

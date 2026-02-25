@@ -12,6 +12,8 @@ TEMPLATE_DIR = str(Path(__file__).parent / 'templates')
 STATIC_DIR = str(Path(__file__).parent / 'static')
 
 app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=STATIC_DIR)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 BACKEND_URL = 'http://127.0.0.1:5001'
 

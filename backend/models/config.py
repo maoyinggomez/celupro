@@ -42,7 +42,7 @@ class Configuracion:
     @staticmethod
     def get_datos_negocio():
         """Obtiene datos principales del negocio"""
-        query = "SELECT clave, valor FROM configuracion WHERE clave IN ('nombre_negocio', 'telefono_negocio', 'direccion_negocio', 'email_negocio', 'logo_url')"
+        query = "SELECT clave, valor FROM configuracion WHERE clave IN ('nombre_negocio', 'telefono_negocio', 'direccion_negocio', 'email_negocio', 'logo_url', 'logo_navbar_url', 'logo_ticket_url')"
         results = db.execute_query(query)
         datos = {}
         for row in results:

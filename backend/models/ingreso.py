@@ -28,23 +28,31 @@ class Ingreso:
         cliente_telefono = datos.get('cliente_telefono', '').upper()
         cliente_direccion = datos.get('cliente_direccion', '').upper()
         color = datos.get('color', '').upper()
+        imei = str(datos.get('imei', '') or '').strip()
         falla_general = datos.get('falla_general', '').upper()
         notas_adicionales = datos.get('notas_adicionales', '').upper()
+        tipo_clave = (datos.get('tipo_clave', '') or '').upper()
+        color_bandeja_sim = (datos.get('color_bandeja_sim', '') or '').upper()
+        estado_botones_detalle = (datos.get('estado_botones_detalle', '') or '').upper()
         valor_total = datos.get('valor_reparacion', 0)
+        fecha_ingreso = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         query = '''
         INSERT INTO ingresos (
-            numero_ingreso, empleado_id, marca_id, modelo_id,
+            numero_ingreso, empleado_id, tecnico_id, marca_id, modelo_id,
             cliente_nombre, cliente_apellido, cliente_cedula, cliente_telefono, cliente_direccion,
-            color, falla_general, notas_adicionales,
+            color, imei, falla_general, notas_adicionales,
             estado_display, estado_tactil, estado_botones, estado_apagado,
-            tiene_clave, clave, valor_total
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tiene_clave, tipo_clave, clave,
+            garantia, estuche, bandeja_sim, color_bandeja_sim, visor_partido, estado_botones_detalle,
+            valor_total, fecha_ingreso
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         
         params = (
             numero_ingreso,
             datos['empleado_id'],
+            datos.get('tecnico_id'),
             datos['marca_id'],
             datos['modelo_id'],
             cliente_nombre,
@@ -53,6 +61,7 @@ class Ingreso:
             cliente_telefono,
             cliente_direccion,
             color,
+            imei,
             falla_general,
             notas_adicionales,
             datos.get('estado_display', False),
@@ -60,13 +69,51 @@ class Ingreso:
             datos.get('estado_botones', False),
             datos.get('estado_apagado', False),
             datos.get('tiene_clave', False),
+            tipo_clave,
             datos.get('clave', ''),
-            valor_total
+            datos.get('garantia', False),
+            datos.get('estuche', False),
+            datos.get('bandeja_sim', False),
+            color_bandeja_sim,
+            datos.get('visor_partido', False),
+            estado_botones_detalle,
+            valor_total,
+            fecha_ingreso
         )
         
         ingreso_id = db.execute_update(query, params)
         
         return {'id': ingreso_id, 'numero_ingreso': numero_ingreso}
+
+    @staticmethod
+    def find_active_duplicate(cliente_cedula):
+        """Busca un cliente existente por cédula (normalizada)"""
+        cedula = str(cliente_cedula or '').strip().upper()
+        cedula_normalizada = cedula.replace('.', '').replace('-', '').replace(' ', '')
+
+        if not cedula_normalizada:
+            return None
+
+        query = '''
+        SELECT
+            id,
+            numero_ingreso,
+            estado_ingreso,
+            fecha_ingreso,
+            cliente_nombre,
+            cliente_apellido,
+            cliente_cedula,
+                        cliente_telefono,
+                        cliente_direccion,
+                        imei
+        FROM ingresos
+                WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(cliente_cedula)), '.', ''), '-', ''), ' ', '') = ?
+        ORDER BY fecha_ingreso DESC
+        LIMIT 1
+        '''
+
+        result = db.execute_single(query, (cedula_normalizada,))
+        return dict(result) if result else None
     
     @staticmethod
     def get_by_id(ingreso_id):
@@ -206,9 +253,9 @@ class Ingreso:
         params = []
         
         for key, value in datos.items():
-            if key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'falla_general', 'valor_total', 'estado_pago']:
+            if key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'imei', 'falla_general', 'valor_total', 'estado_pago', 'tipo_clave', 'garantia', 'estuche', 'bandeja_sim', 'color_bandeja_sim', 'visor_partido', 'estado_botones_detalle', 'estado_apagado', 'tiene_clave', 'clave']:
                 # Convertir a mayúsculas si es string (excepto valor_total)
-                if isinstance(value, str) and key not in ['valor_total', 'estado_pago']:
+                if isinstance(value, str) and key not in ['valor_total', 'estado_pago', 'imei', 'clave']:
                     value = value.upper()
                 updates.append(f"{key} = ?")
                 params.append(value)

@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
+from PIL import Image, ImageOps
 
 # Agregar la ruta padre al path para importar database
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -92,6 +93,13 @@ def get_current_user():
     user = User.get_by_id(current_user_id)
     
     return jsonify(user), 200
+
+@app.route('/api/tecnicos', methods=['GET'])
+@role_required('admin', 'empleado', 'tecnico')
+def get_tecnicos():
+    """Obtiene lista de técnicos activos para asignación"""
+    tecnicos = User.get_tecnicos()
+    return jsonify(tecnicos), 200
 
 # ===== RUTAS DE MARCAS Y MODELOS =====
 @app.route('/api/marcas', methods=['GET'])
@@ -251,9 +259,29 @@ def create_ingreso():
     current_user_id = int(get_jwt_identity())
     
     # Validaciones básicas
-    required_fields = ['marca_id', 'modelo_id', 'cliente_nombre', 'cliente_apellido', 'cliente_cedula']
+    required_fields = ['marca_id', 'modelo_id', 'tecnico_id', 'cliente_nombre', 'cliente_apellido', 'cliente_cedula']
     if not all(data.get(field) for field in required_fields):
         return jsonify({'error': 'Campos requeridos incompletos'}), 400
+
+    imei = str(data.get('imei', '') or '').strip()
+    if imei and not imei.isdigit():
+        return jsonify({'error': 'El IMEI solo puede contener números'}), 400
+
+    cliente_cedula = str(data.get('cliente_cedula', '') or '').strip().upper()
+    duplicate_ingreso = Ingreso.find_active_duplicate(cliente_cedula)
+    if duplicate_ingreso:
+        nombre_actual = str(data.get('cliente_nombre', '') or '').strip().upper()
+        apellido_actual = str(data.get('cliente_apellido', '') or '').strip().upper()
+        nombre_existente = str(duplicate_ingreso.get('cliente_nombre', '') or '').strip().upper()
+        apellido_existente = str(duplicate_ingreso.get('cliente_apellido', '') or '').strip().upper()
+
+        return jsonify({
+            'error': f"Cliente ya existe con esta cédula (último ingreso N° {duplicate_ingreso['numero_ingreso']})",
+            'duplicate': True,
+            'determinante': 'cedula',
+            'coincide_nombre_apellido': nombre_actual == nombre_existente and apellido_actual == apellido_existente,
+            'ingreso_existente': duplicate_ingreso
+        }), 409
     
     try:
         # Agregar empleado_id automáticamente
@@ -323,7 +351,7 @@ def update_ingreso(ingreso_id):
         
         # Actualizar otros campos si es necesario
         updates = {}
-        for key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'falla_general', 'valor_total', 'estado_pago']:
+        for key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'imei', 'falla_general', 'valor_total', 'estado_pago', 'estado_apagado', 'tiene_clave', 'tipo_clave', 'clave', 'garantia', 'estuche', 'bandeja_sim', 'color_bandeja_sim', 'visor_partido', 'estado_botones_detalle']:
             if key in data:
                 updates[key] = data[key]
         if updates:
@@ -569,12 +597,56 @@ def update_configuracion():
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
-@app.route('/api/admin/config/logo', methods=['POST'])
-@role_required('admin')
-def upload_logo():
-    """Sube un logo para el negocio"""
+@app.route('/api/configuracion/publica', methods=['GET'])
+@jwt_required()
+def get_configuracion_publica():
+    """Obtiene datos públicos del negocio para branding en UI"""
     try:
-        # Verificar que llega el archivo
+        datos = Configuracion.get_datos_negocio()
+        logo_navbar = datos.get('logo_navbar_url') or datos.get('logo_url')
+        logo_ticket = datos.get('logo_ticket_url') or datos.get('logo_url')
+        return jsonify({
+            'nombre_negocio': datos.get('nombre_negocio', 'CELUPRO'),
+            'logo_url': datos.get('logo_url'),
+            'logo_navbar_url': logo_navbar,
+            'logo_ticket_url': logo_ticket
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+def process_logo_upload(file, filename, config_key):
+    """Procesa y guarda un logo PNG en static/logos y actualiza configuración"""
+    logos_dir = Path(app.config['UPLOAD_FOLDER'])
+    logos_dir.mkdir(parents=True, exist_ok=True)
+
+    filepath = logos_dir / filename
+
+    image = Image.open(file.stream)
+    if image.mode != 'RGBA':
+        image = image.convert('RGBA')
+
+    max_size = (1400, 400)
+    image.thumbnail(max_size, Image.Resampling.LANCZOS)
+    image.save(str(filepath), format='PNG', optimize=True)
+
+    logo_url = f'/static/logos/{filename}'
+    Configuracion.set(config_key, logo_url)
+
+    return logo_url
+
+@app.route('/api/admin/config/logo/<string:target>', methods=['POST'])
+@role_required('admin')
+def upload_logo_by_target(target):
+    """Sube un logo para navbar o ticket de forma independiente"""
+    try:
+        target_map = {
+            'navbar': ('logo_navbar.png', 'logo_navbar_url'),
+            'ticket': ('logo_ticket.png', 'logo_ticket_url')
+        }
+
+        if target not in target_map:
+            return jsonify({'error': 'Tipo de logo inválido. Use navbar o ticket'}), 400
+
         if 'logo' not in request.files:
             return jsonify({'error': 'No se envió ningún archivo'}), 400
         
@@ -587,29 +659,52 @@ def upload_logo():
         # Verificar extensión
         if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
             return jsonify({'error': 'Solo se permiten archivos PNG o JPG'}), 400
-        
-        # Crear directorio si no existe
-        logos_dir = Path(app.config['UPLOAD_FOLDER'])
-        logos_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Guardar con nombre fijo
-        ext = file.filename.split('.')[-1].lower()
-        filename = f'logo.{ext}'
-        filepath = logos_dir / filename
-        
-        # Guardar archivo
-        file.save(str(filepath))
-        
-        # Actualizar configuración
-        logo_url = f'/static/logos/{filename}'
-        Configuracion.set('logo_url', logo_url)
+
+        filename, config_key = target_map[target]
+        logo_url = process_logo_upload(file, filename, config_key)
+
+        if not Configuracion.get('logo_url'):
+            Configuracion.set('logo_url', logo_url)
         
         return jsonify({
             'success': True, 
             'url': logo_url,
-            'message': 'Logo subido exitosamente'
+            'target': target,
+            'message': f'Logo de {target} subido exitosamente'
         }), 200
         
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': f'Error al procesar archivo: {str(e)}'}), 500
+
+@app.route('/api/admin/config/logo', methods=['POST'])
+@role_required('admin')
+def upload_logo_legacy():
+    """Ruta legacy: sube el mismo logo para navbar y ticket"""
+    try:
+        if 'logo' not in request.files:
+            return jsonify({'error': 'No se envió ningún archivo'}), 400
+
+        file = request.files['logo']
+        if not file or file.filename == '':
+            return jsonify({'error': 'Archivo sin nombre'}), 400
+
+        if not file.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            return jsonify({'error': 'Solo se permiten archivos PNG o JPG'}), 400
+
+        logo_navbar_url = process_logo_upload(file, 'logo_navbar.png', 'logo_navbar_url')
+        file.stream.seek(0)
+        logo_ticket_url = process_logo_upload(file, 'logo_ticket.png', 'logo_ticket_url')
+        Configuracion.set('logo_url', logo_navbar_url)
+
+        return jsonify({
+            'success': True,
+            'url': logo_navbar_url,
+            'logo_navbar_url': logo_navbar_url,
+            'logo_ticket_url': logo_ticket_url,
+            'message': 'Logo subido para navbar y ticket'
+        }), 200
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -640,7 +735,11 @@ def get_ticket_data(ingreso_id):
         
         # Obtener ruta del logo (absoluta desde la raíz del proyecto)
         logo_path = None
-        logo_config = Configuracion.get('logo_url')
+        logo_config = (
+            Configuracion.get('logo_ticket_url')
+            or Configuracion.get('logo_url')
+            or '/static/logos/logo_ticket.png'
+        )
         if logo_config:
             # Construir ruta absoluta al logo
             project_root = Path(__file__).parent.parent

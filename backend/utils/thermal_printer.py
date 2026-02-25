@@ -4,6 +4,7 @@ Utilidad para generar comandos ESC/POS para impresoras térmicas de 58mm
 
 import base64
 import io
+import re
 from PIL import Image
 from datetime import datetime
 
@@ -119,15 +120,32 @@ class ThermalTicket:
     
     def _image_to_bitmap(self, image):
         """Convierte una imagen PIL a comando ESC/POS bitmap"""
-        # Este es un ejemplo simplificado
-        # En producción, se necesitaría una conversión más robusta
-        pixels = image.load()
         width, height = image.size
-        
-        # Agrupar por líneas de 8 píxeles
+        width_bytes = (width + 7) // 8
+
+        raster_data = bytearray()
+
+        for y in range(height):
+            for x_byte in range(width_bytes):
+                byte = 0
+                for bit in range(8):
+                    x = (x_byte * 8) + bit
+                    if x < width:
+                        pixel = image.getpixel((x, y))
+                        if pixel == 0:
+                            byte |= 1 << (7 - bit)
+                raster_data.append(byte)
+
+        x_l = width_bytes & 0xFF
+        x_h = (width_bytes >> 8) & 0xFF
+        y_l = height & 0xFF
+        y_h = (height >> 8) & 0xFF
+
         command = bytearray()
-        
-        # Simplificado: solo retornar la imagen como comando basic
+        command.extend(b'\x1d\x76\x30\x00')
+        command.extend(bytes([x_l, x_h, y_l, y_h]))
+        command.extend(raster_data)
+
         return command
     
     def add_newlines(self, count=1):
@@ -159,6 +177,12 @@ class ThermalTicket:
     def get_base64(self):
         """Retorna el contenido en base64 para envío"""
         return base64.b64encode(self.get_bytes()).decode('utf-8')
+
+
+def _clean_falla_name(value):
+    text = str(value or '').strip()
+    text = re.sub(r'\s*\(\$\s*[\d\.,]+\)\s*$', '', text).strip()
+    return text or 'N/A'
 
 def generate_ticket_data(ingreso_dict, logo_path=None):
     """
@@ -203,15 +227,30 @@ def generate_ticket_data(ingreso_dict, logo_path=None):
     ticket.add_table_row("Nombre:", cliente_nombre)
     ticket.add_table_row("Cédula:", ingreso_dict.get('cliente_cedula', ''))
     ticket.add_table_row("Teléfono:", ingreso_dict.get('cliente_telefono', ''))
-    ticket.add_table_row("Dirección:", ingreso_dict.get('cliente_direccion', 'N/A')[:25])
+    ticket.add_table_row("Dirección:", (ingreso_dict.get('cliente_direccion', '') or '')[:25])
+    ticket.add_table_row("Fecha/Hora:", datetime.now().strftime("%d/%m/%Y %H:%M"))
     ticket.add_line()
     
     # Datos del equipo
     ticket.add_text("EQUIPO RECIBIDO", size='normal', align='left', bold=True)
     ticket.add_table_row("Marca:", ingreso_dict.get('marca', ''))
     ticket.add_table_row("Modelo:", ingreso_dict.get('modelo', ''))
-    ticket.add_table_row("Color:", ingreso_dict.get('color', 'N/A'))
+    ticket.add_table_row("Color:", ingreso_dict.get('color', '') or '')
+    ticket.add_table_row("IMEI:", ingreso_dict.get('imei', '') or '')
     ticket.add_table_row("Clave:", "SÍ" if ingreso_dict.get('tiene_clave') else "NO")
+    if ingreso_dict.get('tiene_clave'):
+        tipo_clave = ingreso_dict.get('tipo_clave', '') or ''
+        clave = ingreso_dict.get('clave', '') or ''
+        ticket.add_table_row("Tipo:", tipo_clave)
+        ticket.add_table_row("Acceso:", clave)
+    ticket.add_table_row("Garantía:", "SÍ" if ingreso_dict.get('garantia') else "NO")
+    ticket.add_table_row("Apagado:", "SÍ" if ingreso_dict.get('estado_apagado') else "NO")
+    ticket.add_table_row("Estuche:", "SÍ" if ingreso_dict.get('estuche') else "NO")
+    ticket.add_table_row("Bandeja SIM:", "SÍ" if ingreso_dict.get('bandeja_sim') else "NO")
+    if ingreso_dict.get('bandeja_sim'):
+        ticket.add_table_row("Color SIM:", ingreso_dict.get('color_bandeja_sim', '') or '')
+    ticket.add_table_row("Visor/Glass:", "SÍ" if ingreso_dict.get('visor_partido') else "NO")
+    ticket.add_table_row("Botones:", ingreso_dict.get('estado_botones_detalle', '') or '')
     ticket.add_line()
     
     # Valor estimado
@@ -219,8 +258,17 @@ def generate_ticket_data(ingreso_dict, logo_path=None):
     ticket.add_text(f"VALOR ESTIMADO: ${total:,.0f}", size='normal', align='center', bold=True)
     
     ticket.add_newlines(1)
-    ticket.add_text("Después de 60 días no se responde", align='center')
-    ticket.add_text("por equipos abandonados.", align='center')
+    ticket.add_text("COMENTARIOS", size='normal', align='left', bold=True)
+    ticket.add_text("PANTALLAS NO TIENEN GARANTIA", align='center', bold=True)
+    ticket.add_text("YA QUE ES UN CRISTAL Y DEPENDE", align='center', bold=True)
+    ticket.add_text("DEL CUIDADOS DEL CLIENTE.", align='center', bold=True)
+    ticket.add_newlines(1)
+    ticket.add_text("LA CONTRASEÑA SE SOLICITA PARA", align='center', bold=True)
+    ticket.add_text("HACER REVISION DE SU TELEFONO", align='center', bold=True)
+    ticket.add_text("Y GARANTIZAR FUNCIONAMIENTO.", align='center', bold=True)
+    ticket.add_newlines(1)
+    ticket.add_text("PASADOS 60 DIAS NO SE RESPONDE", align='center', bold=True)
+    ticket.add_text("POR EQUIPOS ABANDONADOS.", align='center', bold=True)
     
     # LÍNEA DE CORTE
     ticket.add_newlines(2)
@@ -241,15 +289,32 @@ def generate_ticket_data(ingreso_dict, logo_path=None):
     # Datos del cliente
     ticket.add_text("CLIENTE", size='normal', align='left', bold=True)
     ticket.add_table_row("Nombre:", cliente_nombre)
+    ticket.add_table_row("Cédula:", ingreso_dict.get('cliente_cedula', ''))
     ticket.add_table_row("Teléfono:", ingreso_dict.get('cliente_telefono', ''))
+    ticket.add_table_row("Dirección:", (ingreso_dict.get('cliente_direccion', '') or '')[:25])
+    ticket.add_table_row("Fecha/Hora:", datetime.now().strftime("%d/%m/%Y %H:%M"))
     ticket.add_line()
     
     # Datos del equipo
     ticket.add_text("EQUIPO", size='normal', align='left', bold=True)
     ticket.add_table_row("Marca:", ingreso_dict.get('marca', ''))
     ticket.add_table_row("Modelo:", ingreso_dict.get('modelo', ''))
-    ticket.add_table_row("Color:", ingreso_dict.get('color', 'N/A'))
+    ticket.add_table_row("Color:", ingreso_dict.get('color', '') or '')
+    ticket.add_table_row("IMEI:", ingreso_dict.get('imei', '') or '')
     ticket.add_table_row("Clave:", "SÍ" if ingreso_dict.get('tiene_clave') else "NO")
+    if ingreso_dict.get('tiene_clave'):
+        tipo_clave = ingreso_dict.get('tipo_clave', '') or ''
+        clave = ingreso_dict.get('clave', '') or ''
+        ticket.add_table_row("Tipo:", tipo_clave)
+        ticket.add_table_row("Acceso:", clave)
+    ticket.add_table_row("Garantía:", "SÍ" if ingreso_dict.get('garantia') else "NO")
+    ticket.add_table_row("Apagado:", "SÍ" if ingreso_dict.get('estado_apagado') else "NO")
+    ticket.add_table_row("Estuche:", "SÍ" if ingreso_dict.get('estuche') else "NO")
+    ticket.add_table_row("Bandeja SIM:", "SÍ" if ingreso_dict.get('bandeja_sim') else "NO")
+    if ingreso_dict.get('bandeja_sim'):
+        ticket.add_table_row("Color SIM:", ingreso_dict.get('color_bandeja_sim', '') or '')
+    ticket.add_table_row("Visor/Glass:", "SÍ" if ingreso_dict.get('visor_partido') else "NO")
+    ticket.add_table_row("Botones:", ingreso_dict.get('estado_botones_detalle', '') or '')
     ticket.add_line()
     
     # Estado del equipo
@@ -264,16 +329,13 @@ def generate_ticket_data(ingreso_dict, logo_path=None):
     if ingreso_dict.get('fallas'):
         ticket.add_text("FALLAS DIAGNOSTICADAS", size='normal', align='left', bold=True)
         for falla in ingreso_dict['fallas']:
-            valor = falla.get('valor_reparacion', 0) or 0
-            falla_text = f"{falla.get('nombre', 'N/A')}"
-            if valor > 0:
-                falla_text += f" - ${valor:,.0f}"
+            falla_text = _clean_falla_name((falla or {}).get('nombre'))
             ticket.add_text(f"• {falla_text}")
         ticket.add_line()
     
     # Notas
     if ingreso_dict.get('falla_general'):
-        ticket.add_text("OBSERVACIONES", size='normal', align='left', bold=True)
+        ticket.add_text("DETALLE", size='normal', align='left', bold=True)
         ticket.add_text(ingreso_dict['falla_general'][:50])
         ticket.add_line()
     

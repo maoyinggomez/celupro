@@ -70,6 +70,7 @@ def init_db():
         marca_id INTEGER NOT NULL,
         modelo_id INTEGER NOT NULL,
         color TEXT,
+        imei TEXT,
         falla_general TEXT,
         notas_adicionales TEXT,
         estado_display BOOLEAN,
@@ -77,7 +78,14 @@ def init_db():
         estado_botones BOOLEAN,
         estado_apagado BOOLEAN,
         tiene_clave BOOLEAN,
+        tipo_clave TEXT,
         clave TEXT,
+        garantia BOOLEAN DEFAULT 0,
+        estuche BOOLEAN DEFAULT 0,
+        bandeja_sim BOOLEAN DEFAULT 0,
+        color_bandeja_sim TEXT,
+        visor_partido BOOLEAN DEFAULT 0,
+        estado_botones_detalle TEXT,
         valor_total REAL DEFAULT 0,
         estado_pago TEXT DEFAULT 'pendiente',
         estado_ingreso TEXT DEFAULT 'pendiente' CHECK(estado_ingreso IN ('pendiente', 'en_reparacion', 'reparado', 'no_reparable', 'entregado', 'cancelado')),
@@ -288,6 +296,30 @@ def ensure_schema_updates(cursor, conn):
 
     if 'estado_pago' not in columnas_ingresos:
         cursor.execute("ALTER TABLE ingresos ADD COLUMN estado_pago TEXT DEFAULT 'pendiente'")
+
+    if 'imei' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN imei TEXT")
+
+    if 'tipo_clave' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN tipo_clave TEXT")
+
+    if 'garantia' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN garantia BOOLEAN DEFAULT 0")
+
+    if 'estuche' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN estuche BOOLEAN DEFAULT 0")
+
+    if 'bandeja_sim' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN bandeja_sim BOOLEAN DEFAULT 0")
+
+    if 'color_bandeja_sim' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN color_bandeja_sim TEXT")
+
+    if 'visor_partido' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN visor_partido BOOLEAN DEFAULT 0")
+
+    if 'estado_botones_detalle' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN estado_botones_detalle TEXT")
 
     conn.commit()
 
