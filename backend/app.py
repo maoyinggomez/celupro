@@ -156,6 +156,22 @@ def delete_marca(marca_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
+@app.route('/api/marcas/<int:marca_id>/orden', methods=['PUT'])
+@role_required('admin')
+def reorder_marca(marca_id):
+    """Reordena una marca (up/down)"""
+    data = request.get_json() or {}
+    direction = (data.get('direction') or '').lower()
+
+    if direction not in ('up', 'down'):
+        return jsonify({'error': 'Dirección inválida. Usa up o down'}), 400
+
+    try:
+        moved = Marca.move(marca_id, direction)
+        return jsonify({'success': moved}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
 @app.route('/api/modelos', methods=['POST'])
 @role_required('admin')
 def create_modelo():
@@ -193,6 +209,22 @@ def delete_modelo(modelo_id):
     try:
         Modelo.delete(modelo_id)
         return jsonify({'success': True}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/api/modelos/<int:modelo_id>/orden', methods=['PUT'])
+@role_required('admin')
+def reorder_modelo(modelo_id):
+    """Reordena un modelo (up/down)"""
+    data = request.get_json() or {}
+    direction = (data.get('direction') or '').lower()
+
+    if direction not in ('up', 'down'):
+        return jsonify({'error': 'Dirección inválida. Usa up o down'}), 400
+
+    try:
+        moved = Modelo.move(modelo_id, direction)
+        return jsonify({'success': moved}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
@@ -267,25 +299,20 @@ def create_ingreso():
     if imei and not imei.isdigit():
         return jsonify({'error': 'El IMEI solo puede contener números'}), 400
 
-    cliente_cedula = str(data.get('cliente_cedula', '') or '').strip().upper()
-    duplicate_ingreso = Ingreso.find_active_duplicate(cliente_cedula)
-    if duplicate_ingreso:
-        nombre_actual = str(data.get('cliente_nombre', '') or '').strip().upper()
-        apellido_actual = str(data.get('cliente_apellido', '') or '').strip().upper()
-        nombre_existente = str(duplicate_ingreso.get('cliente_nombre', '') or '').strip().upper()
-        apellido_existente = str(duplicate_ingreso.get('cliente_apellido', '') or '').strip().upper()
-
-        return jsonify({
-            'error': f"Cliente ya existe con esta cédula (último ingreso N° {duplicate_ingreso['numero_ingreso']})",
-            'duplicate': True,
-            'determinante': 'cedula',
-            'coincide_nombre_apellido': nombre_actual == nombre_existente and apellido_actual == apellido_existente,
-            'ingreso_existente': duplicate_ingreso
-        }), 409
+    # Nota: la cédula de cliente existente no debe bloquear la creación de nuevos ingresos.
+    # El frontend puede advertir que el cliente ya existe, pero el backend permite registrar
+    # múltiples ingresos para el mismo cliente.
     
     try:
         # Agregar empleado_id automáticamente
         data['empleado_id'] = current_user_id
+        tecnico = User.get_by_id(int(data.get('tecnico_id')))
+        if not tecnico or tecnico.get('rol') != 'tecnico':
+            return jsonify({'error': 'Técnico inválido'}), 400
+
+        data['tecnico_nombre'] = tecnico.get('nombre', '')
+        data['tecnico_telefono'] = tecnico.get('telefono', '')
+        data['tecnico_cedula'] = tecnico.get('cedula', '')
         
         resultado = Ingreso.create(data)
         
@@ -412,7 +439,11 @@ def assign_tecnico(ingreso_id):
         return jsonify({'error': 'tecnico_id requerido'}), 400
     
     try:
-        Ingreso.update_tecnico(ingreso_id, data['tecnico_id'])
+        tecnico = User.get_by_id(int(data['tecnico_id']))
+        if not tecnico or tecnico.get('rol') != 'tecnico':
+            return jsonify({'error': 'Técnico inválido'}), 400
+
+        Ingreso.update_tecnico(ingreso_id, data['tecnico_id'], tecnico)
         return jsonify({'success': True}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -528,6 +559,17 @@ def add_nota(ingreso_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
+@app.route('/api/garantias', methods=['GET'])
+@role_required('admin', 'tecnico')
+def get_garantias():
+    """Obtiene trazabilidad de garantías post-entrega"""
+    limit = request.args.get('limit', 200, type=int)
+    try:
+        garantias = Nota.get_garantias(limit)
+        return jsonify(garantias), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
 # ===== RUTAS DE ADMINISTRACIÓN =====
 @app.route('/api/admin/usuarios', methods=['GET'])
 @role_required('admin')
@@ -550,7 +592,14 @@ def create_usuario():
         return jsonify({'error': 'Usuario ya existe'}), 400
     
     try:
-        user_id = User.create(data['usuario'], data['contraseña'], data['nombre'], data['rol'])
+        user_id = User.create(
+            data['usuario'],
+            data['contraseña'],
+            data['nombre'],
+            data['rol'],
+            data.get('telefono'),
+            data.get('cedula')
+        )
         return jsonify({'id': user_id}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -562,7 +611,14 @@ def update_usuario(user_id):
     data = request.get_json()
     
     try:
-        User.update(user_id, data.get('nombre'), data.get('rol'), data.get('contraseña'))
+        User.update(
+            user_id,
+            data.get('nombre'),
+            data.get('rol'),
+            data.get('contraseña'),
+            data.get('telefono'),
+            data.get('cedula')
+        )
         return jsonify({'success': True}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -609,7 +665,8 @@ def get_configuracion_publica():
             'nombre_negocio': datos.get('nombre_negocio', 'CELUPRO'),
             'logo_url': datos.get('logo_url'),
             'logo_navbar_url': logo_navbar,
-            'logo_ticket_url': logo_ticket
+            'logo_ticket_url': logo_ticket,
+            'tecnico_default_id': Configuracion.get('tecnico_default_id')
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500

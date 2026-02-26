@@ -39,20 +39,23 @@ class Ingreso:
         
         query = '''
         INSERT INTO ingresos (
-            numero_ingreso, empleado_id, tecnico_id, marca_id, modelo_id,
+            numero_ingreso, empleado_id, tecnico_id, tecnico_nombre, tecnico_telefono, tecnico_cedula, marca_id, modelo_id,
             cliente_nombre, cliente_apellido, cliente_cedula, cliente_telefono, cliente_direccion,
             color, imei, falla_general, notas_adicionales,
             estado_display, estado_tactil, estado_botones, estado_apagado,
             tiene_clave, tipo_clave, clave,
             garantia, estuche, bandeja_sim, color_bandeja_sim, visor_partido, estado_botones_detalle,
             valor_total, fecha_ingreso
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         
         params = (
             numero_ingreso,
             datos['empleado_id'],
             datos.get('tecnico_id'),
+            (datos.get('tecnico_nombre') or '').upper(),
+            (datos.get('tecnico_telefono') or '').upper(),
+            (datos.get('tecnico_cedula') or '').upper(),
             datos['marca_id'],
             datos['modelo_id'],
             cliente_nombre,
@@ -124,7 +127,9 @@ class Ingreso:
             m.nombre as marca,
             md.nombre as modelo,
             u1.nombre as empleado,
-            u2.nombre as tecnico,
+            COALESCE(NULLIF(TRIM(u2.nombre), ''), i.tecnico_nombre) as tecnico,
+            COALESCE(NULLIF(TRIM(u2.telefono), ''), i.tecnico_telefono) as tecnico_telefono,
+            COALESCE(NULLIF(TRIM(u2.cedula), ''), i.tecnico_cedula) as tecnico_cedula,
             CASE WHEN EXISTS (
                 SELECT 1 FROM ingreso_fallas if2 
                 WHERE if2.ingreso_id = i.id AND if2.estado_falla = 'reparada'
@@ -154,7 +159,9 @@ class Ingreso:
             i.estado_pago,
             i.valor_total,
             u1.nombre as empleado,
-            u2.nombre as tecnico,
+            COALESCE(NULLIF(TRIM(u2.nombre), ''), i.tecnico_nombre) as tecnico,
+            COALESCE(NULLIF(TRIM(u2.telefono), ''), i.tecnico_telefono) as tecnico_telefono,
+            COALESCE(NULLIF(TRIM(u2.cedula), ''), i.tecnico_cedula) as tecnico_cedula,
             CASE WHEN EXISTS (
                 SELECT 1 FROM ingreso_fallas if2 
                 WHERE if2.ingreso_id = i.id AND if2.estado_falla = 'reparada'
@@ -237,10 +244,17 @@ class Ingreso:
         return result['total'] if result else 0
     
     @staticmethod
-    def update_tecnico(ingreso_id, tecnico_id):
+    def update_tecnico(ingreso_id, tecnico_id, tecnico_data=None):
         """Asigna un técnico a un ingreso"""
-        query = "UPDATE ingresos SET tecnico_id = ? WHERE id = ?"
-        db.execute_update(query, (tecnico_id, ingreso_id))
+        tecnico_data = tecnico_data or {}
+        query = "UPDATE ingresos SET tecnico_id = ?, tecnico_nombre = ?, tecnico_telefono = ?, tecnico_cedula = ? WHERE id = ?"
+        db.execute_update(query, (
+            tecnico_id,
+            str(tecnico_data.get('nombre', '') or '').upper(),
+            str(tecnico_data.get('telefono', '') or '').upper(),
+            str(tecnico_data.get('cedula', '') or '').upper(),
+            ingreso_id
+        ))
         return True
     
     @staticmethod

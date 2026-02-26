@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS usuarios (
     usuario TEXT UNIQUE NOT NULL,
     contraseña TEXT NOT NULL,
     nombre TEXT NOT NULL,
+    telefono TEXT,
+    cedula TEXT,
     rol TEXT CHECK(rol IN ('admin', 'empleado', 'tecnico')) NOT NULL,
     activo INTEGER DEFAULT 1,
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -44,6 +46,9 @@ CREATE TABLE IF NOT EXISTS ingresos (
     numero_ingreso TEXT UNIQUE NOT NULL,
     empleado_id INTEGER NOT NULL,
     tecnico_id INTEGER,
+    tecnico_nombre TEXT,
+    tecnico_telefono TEXT,
+    tecnico_cedula TEXT,
     cliente_nombre TEXT NOT NULL,
     cliente_apellido TEXT NOT NULL,
     cliente_cedula TEXT NOT NULL,
@@ -183,6 +188,7 @@ ORDER BY i.fecha_ingreso;
 -- nombre_negocio: CELUPRO
 -- telefono_negocio: +57 300 000 0000
 -- email_negocio: info@celupro.com
+-- tecnico_default_id: (id técnico por defecto para ingresos)
 -- logo_url: (vacío, se carga después)
 -- ancho_papel_mm: 58
 

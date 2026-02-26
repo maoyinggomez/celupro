@@ -9,6 +9,8 @@ function initAuth() {
     if (loginForm) {
         loginForm.addEventListener('submit', handleLogin);
     }
+
+    setupPasswordToggle();
     
     const logoutBtn = document.getElementById('logoutBtn');
     if (logoutBtn) {
@@ -16,6 +18,29 @@ function initAuth() {
     }
     
     checkSession();
+}
+
+function setupPasswordToggle() {
+    const passwordInput = document.getElementById('contraseña');
+    const toggleBtn = document.getElementById('togglePassword');
+
+    if (!passwordInput || !toggleBtn) {
+        return;
+    }
+
+    toggleBtn.addEventListener('click', () => {
+        const isPassword = passwordInput.type === 'password';
+        passwordInput.type = isPassword ? 'text' : 'password';
+
+        const icon = toggleBtn.querySelector('i');
+        if (icon) {
+            icon.classList.toggle('fa-eye', !isPassword);
+            icon.classList.toggle('fa-eye-slash', isPassword);
+        }
+
+        toggleBtn.setAttribute('aria-label', isPassword ? 'Ocultar contraseña' : 'Mostrar contraseña');
+        toggleBtn.setAttribute('aria-pressed', isPassword ? 'true' : 'false');
+    });
 }
 
 // Ejecutar cuando el DOM esté listo

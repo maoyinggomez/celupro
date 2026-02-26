@@ -61,7 +61,12 @@
 
                         <div class="mb-4">
                             <label for="contraseña" class="form-label">Contraseña</label>
-                            <input type="password" class="form-control form-control-lg" id="contraseña" placeholder="Ingrese su contraseña" required>
+                            <div class="input-group input-group-lg">
+                                <input type="password" class="form-control" id="contraseña" placeholder="Ingrese su contraseña" required>
+                                <button class="btn btn-outline-secondary" type="button" id="togglePassword" aria-label="Mostrar contraseña" aria-pressed="false">
+                                    <i class="fa-solid fa-eye" aria-hidden="true"></i>
+                                </button>
+                            </div>
                         </div>
 
                         <button type="submit" class="btn btn-primary btn-lg w-100">Iniciar Sesión</button>

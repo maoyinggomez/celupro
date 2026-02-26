@@ -41,3 +41,35 @@ class Nota:
         query = "DELETE FROM notas_ingreso WHERE id = ?"
         db.execute_update(query, (nota_id,))
         return True
+
+    @staticmethod
+    def get_garantias(limit=200):
+        """Obtiene trazabilidad de garantías (apertura y gestión)"""
+        query = '''
+        SELECT
+            n.id,
+            n.ingreso_id,
+            n.contenido,
+            n.fecha_creacion,
+            u.nombre as usuario,
+            i.numero_ingreso,
+            i.estado_ingreso,
+            i.cliente_nombre,
+            i.cliente_apellido,
+            i.cliente_cedula,
+            i.cliente_telefono,
+            m.nombre as marca,
+            md.nombre as modelo,
+            i.color
+        FROM notas_ingreso n
+        JOIN ingresos i ON i.id = n.ingreso_id
+        LEFT JOIN usuarios u ON u.id = n.usuario_id
+        LEFT JOIN marcas m ON m.id = i.marca_id
+        LEFT JOIN modelos md ON md.id = i.modelo_id
+          WHERE UPPER(TRIM(n.contenido)) LIKE '[GARANTIA]%'
+              OR UPPER(TRIM(n.contenido)) LIKE 'GARANTÍA %'
+        ORDER BY n.fecha_creacion DESC
+        LIMIT ?
+        '''
+        results = db.execute_query(query, (limit,))
+        return [dict(row) for row in results]

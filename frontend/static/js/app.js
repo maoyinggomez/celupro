@@ -30,6 +30,16 @@ function setCurrentUserSafe(user) {
     }
 }
 
+function getDefaultPageForRole(rol) {
+    const roleDefaults = {
+        admin: 'dashboard',
+        empleado: 'ingreso',
+        tecnico: 'tecnico'
+    };
+
+    return roleDefaults[rol] || 'ingreso';
+}
+
 window.addEventListener('error', function(event) {
     const mainContent = document.getElementById('mainContent');
     if (mainContent && !mainContent.innerHTML.trim()) {
@@ -62,19 +72,12 @@ function initApp() {
     }, true);
     
     if (user && user.rol) {
-        console.log('User logged in, building menu and loading dashboard');
+        const startPage = getDefaultPageForRole(user.rol);
+        console.log(`User logged in, building menu and loading page: ${startPage}`);
         buildMenu();
         loadNavbarBrand();
         
-        // Mostrar botón de usuarios si es admin
-        if (user.rol === 'admin') {
-            const adminBtn = document.getElementById('adminUsersBtn');
-            if (adminBtn) {
-                adminBtn.style.display = 'block';
-            }
-        }
-        
-        loadPage('dashboard');
+        loadPage(startPage);
     } else {
         console.log('No user found, redirecting to login');
         window.location.href = '/';
@@ -167,11 +170,16 @@ if (document.readyState === 'loading') {
 }
 
 function buildMenu() {
-    const menu = document.getElementById('menuNav');
-    if (!menu) return;
+    const menus = [
+        document.getElementById('menuNav'),
+        document.getElementById('menuNavMobile')
+    ].filter(Boolean);
+    if (!menus.length) return;
     const user = getCurrentUserSafe();
     if (!user || !user.rol) {
-        menu.innerHTML = '';
+        menus.forEach((menu) => {
+            menu.innerHTML = '';
+        });
         return;
     }
     
@@ -195,10 +203,10 @@ function buildMenu() {
     };
     
     const items = menuItems[user.rol] || [];
-    
-    menu.innerHTML = items.map(item => `
+
+    const menuHtml = items.map(item => `
         <li class="nav-item mb-2">
-            <a class="nav-link" data-page="${item.page}" href="#" onclick="loadPage('${item.page}'); return false;">
+            <a class="nav-link" data-page="${item.page}" href="#" onclick="loadPage('${item.page}'); closeMobileSidebar(); return false;">
                 <span class="menu-icon-wrap">
                     <i class="fas ${item.icon}"></i>
                 </span>
@@ -207,11 +215,15 @@ function buildMenu() {
         </li>
     `).join('');
 
+    menus.forEach((menu) => {
+        menu.innerHTML = menuHtml;
+    });
+
     updateMenuActiveState(currentPage || items[0]?.page);
 }
 
 function updateMenuActiveState(page) {
-    const links = document.querySelectorAll('#menuNav .nav-link[data-page]');
+    const links = document.querySelectorAll('#menuNav .nav-link[data-page], #menuNavMobile .nav-link[data-page]');
     links.forEach(link => {
         const isActive = link.getAttribute('data-page') === page;
         link.classList.toggle('active', isActive);
@@ -219,10 +231,21 @@ function updateMenuActiveState(page) {
     });
 }
 
+function closeMobileSidebar() {
+    const sidebarEl = document.getElementById('mobileSidebar');
+    if (!sidebarEl || typeof bootstrap === 'undefined') return;
+
+    const sidebarInstance = bootstrap.Offcanvas.getInstance(sidebarEl);
+    if (sidebarInstance) {
+        sidebarInstance.hide();
+    }
+}
+
 async function loadPage(page) {
     const user = getCurrentUserSafe();
+    const previousPage = currentPage;
 
-    if (page === 'admin') {
+    if (page === 'admin' && previousPage !== 'admin') {
         adminActiveTab = 'usuarios';
     }
 
@@ -244,7 +267,11 @@ async function loadPage(page) {
         
         switch (page) {
             case 'dashboard':
-                content = await loadDashboard();
+                if (!user || user.rol !== 'admin') {
+                    content = '<div class="alert alert-danger">Acceso denegado</div>';
+                } else {
+                    content = await loadDashboard();
+                }
                 break;
             case 'ingreso':
                 content = await loadIngresoForm();
@@ -408,6 +435,20 @@ async function loadPage(page) {
                     }
                 });
             });
+        } else if (page === 'registros') {
+            const searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+                searchInput.addEventListener('keyup', (event) => {
+                    if (event.key === 'Enter') {
+                        filtrarRegistros(1);
+                    }
+                });
+            }
+
+            const estadoFilter = document.getElementById('estadoFilter');
+            if (estadoFilter) {
+                estadoFilter.addEventListener('change', () => filtrarRegistros(1));
+            }
         }
     } catch (error) {
         console.error('Error adding event listeners:', error);
@@ -757,6 +798,8 @@ async function loadIngresoForm() {
     console.log('Fallas response:', fallas);
     const tecnicos = await apiCall('/tecnicos');
     console.log('Técnicos response:', tecnicos);
+    const configPublica = await apiCall('/configuracion/publica');
+    const tecnicoDefaultId = parseInt(configPublica?.tecnico_default_id || '', 10) || null;
     
     if (!marcas || !fallas || !tecnicos) {
         console.error('Error: marcas or fallas is null/undefined', {marcas, fallas});
@@ -882,7 +925,12 @@ async function loadIngresoForm() {
                                 <label class="form-label">Técnico que repara *</label>
                                 <select class="form-control form-control-lg" id="tecnico_id" required>
                                     <option value="">Seleccione un técnico</option>
-                                    ${Array.isArray(tecnicos) ? tecnicos.map(t => `<option value="${t.id}">${t.nombre}</option>`).join('') : ''}
+                                    ${Array.isArray(tecnicos) ? tecnicos.map(t => {
+                                        const cedula = t.cedula ? ` · CC ${t.cedula}` : '';
+                                        const telefono = t.telefono ? ` · ${t.telefono}` : '';
+                                        const selected = tecnicoDefaultId === Number(t.id) ? 'selected' : '';
+                                        return `<option value="${t.id}" ${selected}>${t.nombre}${cedula}${telefono}</option>`;
+                                    }).join('') : ''}
                                 </select>
                             </div>
                         </div>
@@ -1169,6 +1217,11 @@ async function submitIngreso(e) {
     // Obtener valores del formulario
     const marcaValue = document.getElementById('marca_id').value;
     const modeloValue = document.getElementById('modelo_id').value;
+    const cedulaInput = document.getElementById('cliente_cedula');
+    const cedulaNormalizada = normalizeCedula(cedulaInput?.value || '');
+    const selectedFromSearch = cedulaInput?.dataset?.selectedFromSearch === 'true';
+    const selectedCedulaNorm = cedulaInput?.dataset?.selectedCedulaNorm || '';
+    const isSelectedExistingClient = selectedFromSearch && selectedCedulaNorm === cedulaNormalizada;
     
     const datos = {
         marca_id: parseInt(marcaValue),
@@ -1197,7 +1250,8 @@ async function submitIngreso(e) {
         visor_partido: document.getElementById('visor_partido_select').value === 'SI',
         estado_botones_detalle: document.getElementById('estado_botones_detalle').value,
         valor_reparacion: parseMonetaryValue(document.getElementById('valor_reparacion').value),
-        fallas_iniciales: fallasSeleccionadas
+        fallas_iniciales: fallasSeleccionadas,
+        cliente_existente_seleccionado: isSelectedExistingClient
     };
 
     if (datos.valor_reparacion === 0) {
@@ -1379,7 +1433,7 @@ async function loadRegistros() {
                             <th>Acciones</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="registrosTableBody">
                         ${response.data.map((ingreso, idx) => {
                             try {
                                 return `
@@ -1390,7 +1444,10 @@ async function loadRegistros() {
                                 <td>${ingreso.cliente_direccion || 'Sin dato'}</td>
                                 <td>${ingreso.fecha_ingreso ? new Date(ingreso.fecha_ingreso).toLocaleString('es-ES') : 'Sin dato'}</td>
                                 <td>${ingreso.marca || 'Sin dato'}</td>
-                                <td>${ingreso.tecnico || 'Sin asignar'}</td>
+                                <td>
+                                    ${ingreso.tecnico || 'Sin asignar'}
+                                    ${(ingreso.tecnico_cedula || ingreso.tecnico_telefono) ? `<br><small class="text-muted">${ingreso.tecnico_cedula ? `CC ${ingreso.tecnico_cedula}` : ''}${(ingreso.tecnico_cedula && ingreso.tecnico_telefono) ? ' · ' : ''}${ingreso.tecnico_telefono || ''}</small>` : ''}
+                                </td>
                                 <td>
                                     <span class="badge bg-${getStatusColor(ingreso.estado_ingreso)}">
                                         ${ingreso.estado_ingreso || 'pendiente'}
@@ -1413,72 +1470,178 @@ async function loadRegistros() {
                         `;
                             } catch (e) {
                                 console.error('Error renderizando ingreso ' + idx + ':', e, ingreso);
-                                return `<tr><td colspan="7"><span class="text-danger">Error renderizando ingreso ${idx}: ${e.message}</span></td></tr>`;
+                                return `<tr><td colspan="10"><span class="text-danger">Error renderizando ingreso ${idx}: ${e.message}</span></td></tr>`;
                             }
                         }).join('')}
                     </tbody>
                 </table>
             </div>
             <div class="card-footer">
-                <small>Total: ${response.total} ingresos | Página ${response.page} de ${response.pages}</small>
+                <small id="registrosSummary">Total: ${response.total} ingresos | Página ${response.page} de ${response.pages}</small>
             </div>
         </div>
-        
-        <script>
-            function filtrarRegistros() {
-                const search = document.getElementById('searchInput').value;
-                const estado = document.getElementById('estadoFilter').value;
-                // TODO: Implementar filtrado
-            }
-        </script>
     `;
+}
+
+async function filtrarRegistros(page = 1) {
+    const search = (document.getElementById('searchInput')?.value || '').trim();
+    const estado = (document.getElementById('estadoFilter')?.value || '').trim();
+    const user = getCurrentUserSafe();
+
+    const params = new URLSearchParams({
+        page: String(page),
+        limit: '20'
+    });
+
+    if (search) params.set('cliente', search);
+    if (estado) params.set('estado', estado);
+
+    const response = await apiCall(`/ingresos?${params.toString()}`);
+
+    if (!response || response.error) {
+        showAlert(response?.error || 'Error al filtrar registros', 'danger');
+        return;
+    }
+
+    const tbody = document.getElementById('registrosTableBody');
+    const summary = document.getElementById('registrosSummary');
+
+    if (!tbody || !summary) {
+        loadPage('registros');
+        return;
+    }
+
+    const data = Array.isArray(response.data) ? response.data : [];
+
+    if (data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">No se encontraron ingresos con esos filtros</td></tr>';
+    } else {
+        tbody.innerHTML = data.map((ingreso) => `
+            <tr>
+                <td><strong>${ingreso.numero_ingreso || 'Sin dato'}</strong></td>
+                <td>${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}</td>
+                <td>${ingreso.cliente_telefono || 'Sin dato'}</td>
+                <td>${ingreso.cliente_direccion || 'Sin dato'}</td>
+                <td>${ingreso.fecha_ingreso ? new Date(ingreso.fecha_ingreso).toLocaleString('es-ES') : 'Sin dato'}</td>
+                <td>${ingreso.marca || 'Sin dato'}</td>
+                <td>
+                    ${ingreso.tecnico || 'Sin asignar'}
+                    ${(ingreso.tecnico_cedula || ingreso.tecnico_telefono) ? `<br><small class="text-muted">${ingreso.tecnico_cedula ? `CC ${ingreso.tecnico_cedula}` : ''}${(ingreso.tecnico_cedula && ingreso.tecnico_telefono) ? ' · ' : ''}${ingreso.tecnico_telefono || ''}</small>` : ''}
+                </td>
+                <td>
+                    <span class="badge bg-${getStatusColor(ingreso.estado_ingreso)}">
+                        ${ingreso.estado_ingreso || 'pendiente'}
+                    </span>
+                </td>
+                <td>$${ingreso.valor_total ? parseFloat(ingreso.valor_total).toLocaleString('es-CO') : '0'}</td>
+                <td>
+                    <button class="btn btn-sm btn-info" onclick="verDetalles(${ingreso.id})">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                    ${user && user.rol === 'admin' ? `
+                        <button class="btn btn-sm btn-danger" onclick="deleteIngreso(${ingreso.id})">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    ` : ''}
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    summary.textContent = `Total: ${response.total || data.length} ingresos | Página ${response.page || page} de ${response.pages || 1}`;
 }
 
 async function loadTecnicoPanel() {
     const response = await apiCall('/ingresos');
+    const garantiasResponse = await apiCall('/garantias');
     
     if (!response || !response.data) {
         return '<div class="alert alert-danger">Error al cargar panel técnico</div>';
     }
     
     const ingresos = response.data;
+    let garantias = Array.isArray(garantiasResponse) ? garantiasResponse : [];
+
+    if (garantias.length === 0) {
+        garantias = await buildGarantiasFallbackFromIngresos(ingresos);
+    }
+
+    const garantiaEstadoPorIngreso = new Map();
+    garantias.forEach((garantia) => {
+        const ingresoId = garantia?.ingreso_id;
+        if (ingresoId === null || ingresoId === undefined) return;
+
+        const fecha = new Date(garantia.fecha_creacion || 0).getTime();
+        const estado = getGarantiaEstadoFromContenido(garantia.contenido || '');
+        const existente = garantiaEstadoPorIngreso.get(ingresoId);
+
+        if (!existente || fecha > existente.fecha) {
+            garantiaEstadoPorIngreso.set(ingresoId, { fecha, estado });
+        }
+    });
+
+    const garantiaCasosCount = Array.from(garantiaEstadoPorIngreso.values())
+        .filter((item) => item.estado !== 'resuelta')
+        .length;
+
+    const hasGarantias = garantiaCasosCount > 0;
+    const counts = {
+        pendiente: ingresos.filter(i => i.estado_ingreso === 'pendiente').length,
+        en_reparacion: ingresos.filter(i => i.estado_ingreso === 'en_reparacion').length,
+        reparado: ingresos.filter(i => i.estado_ingreso === 'reparado').length,
+        no_reparable: ingresos.filter(i => i.estado_ingreso === 'no_reparable').length,
+        entregado: ingresos.filter(i => i.estado_ingreso === 'entregado').length
+    };
     
     return `
         <h2 class="mb-4">Panel Técnico - Gestión de Reparaciones</h2>
         <div class="alert alert-light border mb-3 py-2">
             <small><strong>Flujo:</strong> Pendiente → En Reparación → Reparado/No Reparable → Entregado</small>
         </div>
+
+        <div class="row g-2 mb-3">
+            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">Pendientes</small><div class="fw-bold">${counts.pendiente}</div></div></div>
+            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">En reparación</small><div class="fw-bold">${counts.en_reparacion}</div></div></div>
+            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">Reparados</small><div class="fw-bold">${counts.reparado}</div></div></div>
+            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">No reparables</small><div class="fw-bold">${counts.no_reparable}</div></div></div>
+            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">Entregados</small><div class="fw-bold">${counts.entregado}</div></div></div>
+        </div>
         
         <ul class="nav nav-tabs mb-4" role="tablist">
             <li class="nav-item">
-                <a class="nav-link active" data-bs-toggle="tab" href="#pendientes">
-                    <i class="fas fa-clock me-2"></i> Pendientes
+                <a class="nav-link ${hasGarantias ? '' : 'active'}" data-bs-toggle="tab" href="#pendientes">
+                    <i class="fas fa-clock me-2"></i> Pendientes (${counts.pendiente})
                 </a>
             </li>
             <li class="nav-item">
                 <a class="nav-link" data-bs-toggle="tab" href="#en-reparacion">
-                    <i class="fas fa-tools me-2"></i> En Reparación
+                    <i class="fas fa-tools me-2"></i> En Reparación (${counts.en_reparacion})
                 </a>
             </li>
             <li class="nav-item">
                 <a class="nav-link" data-bs-toggle="tab" href="#reparados">
-                    <i class="fas fa-check me-2"></i> Reparados
+                    <i class="fas fa-check me-2"></i> Reparados (${counts.reparado})
                 </a>
             </li>
             <li class="nav-item">
                 <a class="nav-link" data-bs-toggle="tab" href="#no-reparables">
-                    <i class="fas fa-ban me-2"></i> No Reparables
+                    <i class="fas fa-ban me-2"></i> No Reparables (${counts.no_reparable})
                 </a>
             </li>
             <li class="nav-item">
                 <a class="nav-link" data-bs-toggle="tab" href="#entregados">
-                    <i class="fas fa-box me-2"></i> Entregados
+                    <i class="fas fa-box me-2"></i> Entregados (${counts.entregado})
+                </a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link ${hasGarantias ? 'active' : ''}" data-bs-toggle="tab" href="#garantias">
+                    <i class="fas fa-shield-alt me-2"></i> Garantías (${garantiaCasosCount})
                 </a>
             </li>
         </ul>
         
         <div class="tab-content">
-            <div id="pendientes" class="tab-pane fade show active">
+            <div id="pendientes" class="tab-pane fade ${hasGarantias ? '' : 'show active'}">
                 ${renderIngresosPorEstado(ingresos, 'pendiente')}
             </div>
             <div id="en-reparacion" class="tab-pane fade">
@@ -1493,45 +1656,445 @@ async function loadTecnicoPanel() {
             <div id="entregados" class="tab-pane fade">
                 ${renderIngresosEntregadosEnLista(ingresos)}
             </div>
+            <div id="garantias" class="tab-pane fade ${hasGarantias ? 'show active' : ''}">
+                ${renderGarantiasTab(garantias)}
+            </div>
+        </div>
+    `;
+}
+
+async function buildGarantiasFallbackFromIngresos(ingresos) {
+    try {
+        const detalles = await Promise.all(
+            (Array.isArray(ingresos) ? ingresos : []).map((ing) => apiCall(`/ingresos/${ing.id}`))
+        );
+
+        const registros = [];
+        detalles.forEach((det) => {
+            if (!det || !Array.isArray(det.notas)) return;
+
+            const notasGarantia = det.notas.filter((nota) => /\[GARANTIA\]|GARANT[ÍI]A/i.test(nota?.contenido || ''));
+            notasGarantia.forEach((nota) => {
+                registros.push({
+                    id: nota.id,
+                    ingreso_id: det.id,
+                    contenido: nota.contenido,
+                    fecha_creacion: nota.fecha_creacion,
+                    usuario: nota.usuario,
+                    numero_ingreso: det.numero_ingreso,
+                    estado_ingreso: det.estado_ingreso,
+                    cliente_nombre: det.cliente_nombre,
+                    cliente_apellido: det.cliente_apellido,
+                    cliente_cedula: det.cliente_cedula,
+                    cliente_telefono: det.cliente_telefono,
+                    marca: det.marca,
+                    modelo: det.modelo,
+                    color: det.color
+                });
+            });
+        });
+
+        registros.sort((a, b) => new Date(b.fecha_creacion) - new Date(a.fecha_creacion));
+        return registros;
+    } catch (error) {
+        console.error('Error construyendo fallback de garantías:', error);
+        return [];
+    }
+}
+
+function renderGarantiasTab(garantias) {
+    const rows = Array.isArray(garantias) ? garantias : [];
+    const grouped = new Map();
+
+    rows.forEach((row) => {
+        const key = row.ingreso_id;
+        if (!grouped.has(key)) {
+            grouped.set(key, []);
+        }
+        grouped.get(key).push(row);
+    });
+
+    const casos = Array.from(grouped.values()).map((movimientos) => {
+        const latest = movimientos[0];
+        const apertura = movimientos.find((m) => /\[GARANTIA\]\[ABIERTA\]|\[GARANTIA\]\s*POST-ENTREGA|GARANT[ÍI]A\s*POST-ENTREGA/i.test(m.contenido || '')) || movimientos[movimientos.length - 1];
+
+        return {
+            latest,
+            apertura,
+            estadoGarantia: getGarantiaEstadoFromContenido(latest.contenido || ''),
+            comentarioApertura: limpiarTextoGarantia(apertura.contenido || ''),
+            ultimoMovimiento: limpiarTextoGarantia(latest.contenido || '')
+        };
+    });
+
+    const activasCount = casos.filter((caso) => caso.estadoGarantia !== 'resuelta').length;
+    const resueltasCount = casos.length - activasCount;
+
+    const html = `
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-3">Trazabilidad de Garantías</h5>
+                <div class="d-flex flex-wrap gap-2 mb-2">
+                    <span class="badge bg-warning text-dark">Activas: ${activasCount}</span>
+                    <span class="badge bg-success">Resueltas (histórico): ${resueltasCount}</span>
+                </div>
+                <input type="text" class="form-control" id="buscarGarantias" placeholder="Buscar por ingreso, cliente, cédula, equipo o comentario...">
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0" id="tablaGarantias">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Ingreso</th>
+                                <th>Cliente</th>
+                                <th>Equipo</th>
+                                <th>Motivo garantía</th>
+                                <th>Último movimiento</th>
+                                <th>Estado garantía</th>
+                                <th>Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="listGarantias">
+                            ${casos.length > 0 ? casos.map((caso) => {
+                                const g = caso.latest;
+                                const cliente = `${g.cliente_nombre || ''} ${g.cliente_apellido || ''}`.trim();
+                                const equipo = `${g.marca || ''} ${g.modelo || ''}${g.color ? ` · ${g.color}` : ''}`.trim();
+                                const filtro = `${g.numero_ingreso || ''} ${cliente} ${g.cliente_cedula || ''} ${equipo} ${caso.comentarioApertura} ${caso.ultimoMovimiento}`.toLowerCase();
+                                const badgeClass = {
+                                    abierta: 'bg-warning text-dark',
+                                    en_gestion: 'bg-primary',
+                                    resuelta: 'bg-success'
+                                }[caso.estadoGarantia] || 'bg-secondary';
+                                const estadoLabel = {
+                                    abierta: 'Pendiente',
+                                    en_gestion: 'En gestión',
+                                    resuelta: 'Resuelta'
+                                }[caso.estadoGarantia] || 'Sin estado';
+
+                                return `
+                                    <tr class="fila-garantia" data-filter="${filtro}">
+                                        <td><strong>#${g.numero_ingreso || 'S/N'}</strong></td>
+                                        <td>
+                                            ${cliente || 'N/A'}
+                                            <br><small class="text-muted">CC: ${g.cliente_cedula || 'N/A'} · ${g.cliente_telefono || 'N/A'}</small>
+                                        </td>
+                                        <td><small>${equipo || 'N/A'}</small></td>
+                                        <td><small>${caso.comentarioApertura || 'Sin comentario'}</small></td>
+                                        <td><small>${caso.ultimoMovimiento || 'Sin movimiento'}</small><br><small class="text-muted">${g.usuario || 'N/A'} · ${new Date(g.fecha_creacion).toLocaleString('es-ES')}</small></td>
+                                        <td><span class="badge ${badgeClass}">${estadoLabel}</span></td>
+                                        <td>
+                                            ${caso.estadoGarantia !== 'resuelta' ? `
+                                                <button class="btn btn-sm btn-outline-success" onclick="abrirModalResolverGarantia(${g.ingreso_id})" title="Marcar resuelta">
+                                                    Resolver
+                                                </button>
+                                            ` : ''}
+                                            <button class="btn btn-sm btn-info" onclick="verDetalleGarantia(${g.ingreso_id})" title="Ver detalle de garantía">
+                                                <i class="fas fa-eye"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                `;
+                            }).join('') : '<tr><td colspan="7" class="text-center text-muted py-4">No hay garantías registradas</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+
+    setTimeout(() => {
+        const buscarGarantiasInput = document.getElementById('buscarGarantias');
+        if (!buscarGarantiasInput) return;
+
+        buscarGarantiasInput.addEventListener('keyup', function() {
+            const filtro = this.value.toLowerCase();
+            const filas = document.querySelectorAll('.fila-garantia');
+            filas.forEach((fila) => {
+                const texto = fila.getAttribute('data-filter') || '';
+                fila.style.display = texto.includes(filtro) ? '' : 'none';
+            });
+        });
+    }, 100);
+
+    return html;
+}
+
+function limpiarTextoGarantia(texto) {
+    return String(texto || '')
+    .replace(/^\[GARANTIA\]\[ABIERTA\]:\s*/i, '')
+        .replace(/^\[GARANTIA\]\[ABIERTA\]\s*POST-ENTREGA:\s*/i, '')
+        .replace(/^\[GARANTIA\]\[GESTION\]:\s*/i, '')
+        .replace(/^\[GARANTIA\]\[RESUELTA\]:\s*/i, '')
+        .replace(/^\[GARANTIA\]\s*POST-ENTREGA:\s*/i, '')
+        .replace(/^GARANT[ÍI]A\s*POST-ENTREGA:\s*/i, '')
+        .trim();
+}
+
+function getGarantiaEstadoFromContenido(contenido) {
+    const text = String(contenido || '').toUpperCase();
+    if (text.includes('[GARANTIA][RESUELTA]')) return 'resuelta';
+    if (text.includes('[GARANTIA][GESTION]')) return 'en_gestion';
+    return 'abierta';
+}
+
+async function actualizarEstadoGarantia(ingresoId, nuevoEstadoGarantia) {
+    const comentario = (window.__garantiaComentarioPendiente || '').trim();
+    if (!comentario) {
+        showAlert('Debes ingresar un comentario para la trazabilidad', 'warning');
+        return;
+    }
+
+    const prefijo = {
+        abierta: '[GARANTIA][ABIERTA] REAPERTURA',
+        en_gestion: '[GARANTIA][GESTION]',
+        resuelta: '[GARANTIA][RESUELTA]'
+    }[nuevoEstadoGarantia] || '[GARANTIA][GESTION]';
+
+    const usuarioActual = getCurrentUserSafe();
+    const nombreTecnico = (usuarioActual?.nombre || usuarioActual?.usuario || 'N/A').toString().trim();
+    const fechaMovimiento = new Date().toLocaleString('es-ES');
+    const detalleCierre = nuevoEstadoGarantia === 'resuelta'
+        ? ` | Resuelto el ${fechaMovimiento} por ${nombreTecnico}`
+        : '';
+
+    const response = await apiCall(`/ingresos/${ingresoId}/notas`, {
+        method: 'POST',
+        body: JSON.stringify({
+            contenido: `${prefijo}: ${comentario.trim()}${detalleCierre}`,
+            tipo: 'tecnica'
+        })
+    });
+
+    if (response && (response.id || response.success)) {
+        window.__garantiaComentarioPendiente = '';
+        showAlert('Garantía actualizada correctamente', 'success');
+        const detalleIngresoId = Number(document.getElementById('garantiaDetalleIngresoId')?.value || 0);
+        if (detalleIngresoId && detalleIngresoId === ingresoId) {
+            verDetalleGarantia(ingresoId);
+        } else {
+            loadPage('tecnico');
+        }
+    } else {
+        showAlert(response?.error || 'No se pudo actualizar la garantía', 'danger');
+    }
+}
+
+function abrirModalResolverGarantia(ingresoId) {
+    return abrirModalEstadoGarantia(ingresoId, 'resuelta');
+}
+
+function abrirModalEstadoGarantia(ingresoId, nuevoEstadoGarantia = 'resuelta') {
+    const esResuelta = nuevoEstadoGarantia === 'resuelta';
+    const modalId = `modalResolverGarantia_${ingresoId}_${Date.now()}`;
+    const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.id = modalId;
+    modal.setAttribute('tabindex', '-1');
+
+    modal.innerHTML = `
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">${esResuelta ? 'Marcar garantía como resuelta' : 'Marcar garantía como pendiente'}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                </div>
+                <div class="modal-body">
+                    <label class="form-label">${esResuelta ? 'Detalle de solución' : 'Motivo para dejarla pendiente'} (obligatorio)</label>
+                    <textarea class="form-control" id="${modalId}_comentario" rows="4" placeholder="${esResuelta ? 'Ej: Se reemplazó el componente y se realizaron pruebas funcionales.' : 'Ej: El cliente reporta que la falla persiste, se reabre caso.'}"></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn ${esResuelta ? 'btn-success' : 'btn-warning'}" id="${modalId}_confirmar">${esResuelta ? 'Resolver' : 'Marcar pendiente'}</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    const bsModal = new bootstrap.Modal(modal);
+
+    modal.querySelector(`#${modalId}_confirmar`).addEventListener('click', async () => {
+        const comentario = (modal.querySelector(`#${modalId}_comentario`)?.value || '').trim();
+        if (!comentario) {
+            showAlert(esResuelta ? 'Debes escribir el detalle de solución' : 'Debes indicar el motivo para dejarla pendiente', 'warning');
+            return;
+        }
+
+        window.__garantiaComentarioPendiente = comentario;
+        await actualizarEstadoGarantia(ingresoId, esResuelta ? 'resuelta' : 'abierta');
+        bsModal.hide();
+    });
+
+    modal.addEventListener('hidden.bs.modal', () => {
+        modal.remove();
+    }, { once: true });
+
+    bsModal.show();
+}
+
+async function verDetalleGarantia(ingresoId) {
+    const ingreso = await apiCall(`/ingresos/${ingresoId}`);
+    if (!ingreso || ingreso.error) {
+        showAlert('No se pudo cargar el detalle de garantía', 'danger');
+        return;
+    }
+
+    let garantias = await apiCall('/garantias');
+    if (!Array.isArray(garantias) || garantias.length === 0) {
+        garantias = await buildGarantiasFallbackFromIngresos([{ id: ingresoId }]);
+    }
+
+    const movimientos = (Array.isArray(garantias) ? garantias : [])
+        .filter((item) => Number(item.ingreso_id) === Number(ingresoId))
+        .sort((a, b) => new Date(b.fecha_creacion) - new Date(a.fecha_creacion));
+
+    const apertura = movimientos.find((mov) => /\[GARANTIA\]\[ABIERTA\]|GARANT[ÍI]A\s*POST-ENTREGA/i.test(mov.contenido || '')) || movimientos[movimientos.length - 1];
+    const estadoActual = movimientos.length > 0 ? getGarantiaEstadoFromContenido(movimientos[0].contenido || '') : 'abierta';
+    const estadoLabel = {
+        abierta: 'Pendiente',
+        en_gestion: 'En gestión',
+        resuelta: 'Resuelta'
+    }[estadoActual] || 'Pendiente';
+    const estadoClass = {
+        abierta: 'bg-warning text-dark',
+        en_gestion: 'bg-primary',
+        resuelta: 'bg-success'
+    }[estadoActual] || 'bg-secondary';
+
+    const cliente = `${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}`.trim();
+    const equipo = `${ingreso.marca || ''} ${ingreso.modelo || ''}${ingreso.color ? ` · ${ingreso.color}` : ''}`.trim();
+
+    const mainContent = document.getElementById('mainContent');
+    mainContent.innerHTML = `
+        <input type="hidden" id="garantiaDetalleIngresoId" value="${ingresoId}">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2 class="mb-0">Detalle de Garantía · Ingreso #${ingreso.numero_ingreso || ingresoId}</h2>
+            <button class="btn btn-secondary" onclick="loadPage('tecnico')"><i class="fas fa-arrow-left me-2"></i>Volver</button>
+        </div>
+
+        <div class="row g-3 mb-3">
+            <div class="col-md-6">
+                <div class="card h-100">
+                    <div class="card-header bg-primary text-white"><strong>Cliente</strong></div>
+                    <div class="card-body">
+                        <p class="mb-1"><strong>Nombre:</strong> ${cliente || 'N/A'}</p>
+                        <p class="mb-1"><strong>Cédula:</strong> ${ingreso.cliente_cedula || 'N/A'}</p>
+                        <p class="mb-1"><strong>Teléfono:</strong> ${ingreso.cliente_telefono || 'N/A'}</p>
+                        <p class="mb-0"><strong>Dirección:</strong> ${ingreso.cliente_direccion || 'N/A'}</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card h-100">
+                    <div class="card-header bg-info text-white"><strong>Equipo y Garantía</strong></div>
+                    <div class="card-body">
+                        <p class="mb-1"><strong>Equipo:</strong> ${equipo || 'N/A'}</p>
+                        <p class="mb-1"><strong>IMEI:</strong> ${ingreso.imei || 'N/A'}</p>
+                        <p class="mb-1"><strong>Estado garantía:</strong> <span class="badge ${estadoClass}">${estadoLabel}</span></p>
+                        <p class="mb-0"><strong>Motivo de ingreso a garantía:</strong> ${apertura ? limpiarTextoGarantia(apertura.contenido || '') : 'N/A'}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header bg-light"><strong>Historial de garantía</strong></div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Fecha</th>
+                                <th>Estado</th>
+                                <th>Detalle</th>
+                                <th>Usuario</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${movimientos.length > 0 ? movimientos.map((mov) => {
+                                const estado = getGarantiaEstadoFromContenido(mov.contenido || '');
+                                const label = { abierta: 'Pendiente', en_gestion: 'En gestión', resuelta: 'Resuelta' }[estado] || 'Pendiente';
+                                const badge = { abierta: 'bg-warning text-dark', en_gestion: 'bg-primary', resuelta: 'bg-success' }[estado] || 'bg-secondary';
+                                return `
+                                    <tr>
+                                        <td><small>${new Date(mov.fecha_creacion).toLocaleString('es-ES')}</small></td>
+                                        <td><span class="badge ${badge}">${label}</span></td>
+                                        <td><small>${limpiarTextoGarantia(mov.contenido || '') || 'Sin detalle'}</small></td>
+                                        <td><small>${mov.usuario || 'N/A'}</small></td>
+                                    </tr>
+                                `;
+                            }).join('') : '<tr><td colspan="4" class="text-center text-muted py-3">Sin historial de garantía</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="d-flex gap-2">
+            <button class="btn btn-warning" onclick="abrirModalEstadoGarantia(${ingresoId}, 'abierta')" ${estadoActual === 'abierta' ? 'disabled' : ''}>
+                <i class="fas fa-rotate-left me-2"></i>Marcar pendiente
+            </button>
+            <button class="btn btn-success" onclick="abrirModalEstadoGarantia(${ingresoId}, 'resuelta')" ${estadoActual === 'resuelta' ? 'disabled' : ''}>
+                <i class="fas fa-check me-2"></i>Marcar resuelta
+            </button>
+            <button class="btn btn-outline-secondary" onclick="loadPage('tecnico')">Volver al panel técnico</button>
         </div>
     `;
 }
 
 function renderIngresosPorEstado(ingresos, estado) {
     const filtrados = ingresos.filter(i => i.estado_ingreso === estado);
+    const estadoTitulos = {
+        pendiente: 'Pendientes por iniciar',
+        en_reparacion: 'Equipos en reparación',
+        reparado: 'Listos para entrega',
+        no_reparable: 'Casos no reparables'
+    };
+    const tituloSeccion = estadoTitulos[estado] || 'Ingresos';
     
     return `
-        <div class="row">
-            ${filtrados.length > 0 ? filtrados.map(ingreso => `
-                <div class="col-12 mb-4">
-                    <div class="card">
-                        <div class="card-header bg-primary text-white">
-                            <h5 class="mb-0">${ingreso.numero_ingreso}</h5>
-                        </div>
-                        <div class="card-body">
-                            <p><strong>Cliente:</strong> ${ingreso.cliente_nombre} ${ingreso.cliente_apellido}</p>
-                            <p><strong>Identificación:</strong> ${ingreso.cliente_cedula || 'N/A'}</p>
-                            <p><strong>Teléfono:</strong> ${ingreso.cliente_telefono || 'N/A'}</p>
-                            <p><strong>Clave de Ingreso:</strong> <span class="badge bg-secondary">${ingreso.numero_ingreso || 'S/N'}</span></p>
-                            <p><strong>Equipo:</strong> ${ingreso.marca} ${ingreso.modelo}</p>
-                            <p><strong>Color:</strong> ${ingreso.color || 'N/A'}</p>
-                            <p><strong>Reparación:</strong> ${ingreso.falla_general || 'N/A'}</p>
-                            <p><strong>Estado:</strong> <span class="badge bg-info">${ingreso.estado_ingreso}</span></p>
-                            <p><strong>Fecha y Hora de Ingreso:</strong> ${(() => { const d = new Date(ingreso.fecha_ingreso); const hh = String(d.getHours()).padStart(2, '0'); const mm = String(d.getMinutes()).padStart(2, '0'); return d.toLocaleDateString('es-ES') + ' ' + hh + ':' + mm; })()}</p>
-                            ${ingreso.notas ? `<p><strong>Notas:</strong> ${ingreso.notas}</p>` : ''}
-                            <div class="mt-3">
-                                <label class="form-label mb-2">Acciones disponibles:</label>
-                                <div class="d-flex flex-wrap gap-2">
-                                    ${getTecnicoEstadoActionButtons(ingreso.id, ingreso.estado_ingreso)}
-                                </div>
-                            </div>
-                            <button class="btn btn-sm btn-info w-100 mt-2" onclick="verDetallesTecnico(${ingreso.id})">
-                                Ver Detalles Completos
-                            </button>
-                        </div>
-                    </div>
+        <div class="alert alert-light border mb-3 py-2">
+            <small><strong>${tituloSeccion}:</strong> usa “Mover a …” para avanzar cada caso en el flujo.</small>
+        </div>
+        <div class="card">
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Ingreso</th>
+                                <th>Cliente</th>
+                                <th>Equipo</th>
+                                <th>Estado</th>
+                                <th>Fecha</th>
+                                <th width="420">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${filtrados.length > 0 ? filtrados.map(ingreso => `
+                                <tr>
+                                    <td><strong>#${ingreso.numero_ingreso || 'S/N'}</strong></td>
+                                    <td>
+                                        ${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}
+                                        <br><small class="text-muted">CC: ${ingreso.cliente_cedula || 'N/A'} · ${ingreso.cliente_telefono || 'N/A'}</small>
+                                    </td>
+                                    <td>${ingreso.marca || ''} ${ingreso.modelo || ''}${ingreso.color ? ` · ${ingreso.color}` : ''}</td>
+                                    <td><span class="badge bg-info">${ingreso.estado_ingreso || 'pendiente'}</span></td>
+                                    <td><small>${(() => { const d = new Date(ingreso.fecha_ingreso); const hh = String(d.getHours()).padStart(2, '0'); const mm = String(d.getMinutes()).padStart(2, '0'); return d.toLocaleDateString('es-ES') + ' ' + hh + ':' + mm; })()}</small></td>
+                                    <td>
+                                        <div class="d-flex flex-wrap gap-1 align-items-center">
+                                            ${getTecnicoEstadoActionButtons(ingreso.id, ingreso.estado_ingreso)}
+                                            <button class="btn btn-sm btn-info" onclick="verDetallesTecnico(${ingreso.id})">
+                                                Ver detalle
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            `).join('') : '<tr><td colspan="6" class="text-center text-muted py-4">No hay ingresos en este estado</td></tr>'}
+                        </tbody>
+                    </table>
                 </div>
-            `).join('') : '<div class="col-12"><div class="alert alert-info">No hay ingresos en este estado</div></div>'}
+            </div>
         </div>
     `;
 }
@@ -1568,7 +2131,7 @@ function getTecnicoEstadoActionButtons(ingresoId, estadoActual) {
     return opciones
         .map((estado) => `
             <button type="button" class="btn btn-sm ${styles[estado] || 'btn-outline-secondary'}" onclick="cambiarEstadoIngreso(${ingresoId}, '${estado}')">
-                ${labels[estado] || estado}
+                Mover a ${labels[estado] || estado}
             </button>
         `)
         .join('');
@@ -1588,7 +2151,7 @@ function renderIngresosEntregadosEnLista(ingresos) {
                     <table class="table table-sm table-hover mb-0" id="tablaEntregados">
                         <thead class="table-light">
                             <tr>
-                                <th width="70">ID</th>
+                                <th width="70">Ingreso</th>
                                 <th>Nombre</th>
                                 <th width="110">Cédula</th>
                                 <th width="110">Teléfono</th>
@@ -1607,7 +2170,7 @@ function renderIngresosEntregadosEnLista(ingresos) {
                                     <td><small>${ing.cliente_telefono || 'N/A'}</small></td>
                                     <td><small>${ing.marca} ${ing.modelo} - ${ing.color || 'N/A'}</small></td>
                                     <td><small>${ing.falla_general || 'N/A'}</small></td>
-                                    <td><small>${new Date(ing.fecha_ingreso).toLocaleDateString('es-ES')}</small></td>
+                                    <td><small>${new Date(ing.fecha_entrega || ing.fecha_ingreso).toLocaleDateString('es-ES')}</small></td>
                                     <td>
                                         <button class="btn btn-sm btn-info" onclick="verDetallesTecnico(${ing.id})" title="Ver todos los detalles">
                                             <i class="fas fa-eye"></i>
@@ -1754,11 +2317,7 @@ async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
     }
     
     // Para otros estados, actualizar directamente
-    const data = { estado_ingreso: nuevoEstado };
-    const response = await apiCall(`/ingresos/${ingresoId}`, {
-        method: 'PUT',
-        body: JSON.stringify(data)
-    });
+    const response = await setIngresoEstado(ingresoId, nuevoEstado);
     
     if (response && response.success) {
         showAlert('Estado actualizado correctamente', 'success');
@@ -1862,6 +2421,11 @@ async function loadAdminPanel() {
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link ${adminActiveTab === 'tecnicos' ? 'active' : ''}" data-bs-toggle="tab" href="#tecnicos">
+                    <i class="fas fa-user-cog me-2"></i> Técnicos
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link ${adminActiveTab === 'clientes' ? 'active' : ''}" data-bs-toggle="tab" href="#clientes">
                     <i class="fas fa-address-book me-2"></i> Base de Clientes
                 </a>
@@ -1886,6 +2450,9 @@ async function loadAdminPanel() {
         <div class="tab-content">
             <div id="usuarios" class="tab-pane fade ${adminActiveTab === 'usuarios' ? 'show active' : ''}">
                 ${await loadAdminUsuarios()}
+            </div>
+            <div id="tecnicos" class="tab-pane fade ${adminActiveTab === 'tecnicos' ? 'show active' : ''}">
+                ${await loadAdminTecnicos()}
             </div>
             <div id="clientes" class="tab-pane fade ${adminActiveTab === 'clientes' ? 'show active' : ''}">
                 ${await loadAdminClientes()}
@@ -1929,6 +2496,14 @@ async function loadAdminUsuarios() {
                                 <input type="text" class="form-control form-control-sm" id="newUserNombre" required>
                             </div>
                             <div class="col-md-6 mb-2">
+                                <label class="form-label">Cédula</label>
+                                <input type="text" class="form-control form-control-sm" id="newUserCedula" placeholder="Opcional">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Teléfono</label>
+                                <input type="tel" class="form-control form-control-sm" id="newUserTelefono" placeholder="Opcional">
+                            </div>
+                            <div class="col-md-6 mb-2">
                                 <label class="form-label">Contraseña *</label>
                                 <input type="password" class="form-control form-control-sm" id="newUserPassword" required minlength="6">
                             </div>
@@ -1959,6 +2534,8 @@ async function loadAdminUsuarios() {
                         <tr>
                             <th>Usuario</th>
                             <th>Nombre</th>
+                            <th>Cédula</th>
+                            <th>Teléfono</th>
                             <th>Rol</th>
                             <th width="200">Acciones</th>
                         </tr>
@@ -1968,6 +2545,8 @@ async function loadAdminUsuarios() {
                             <tr>
                                 <td>${u.usuario}</td>
                                 <td>${u.nombre}</td>
+                                <td>${u.cedula || '-'}</td>
+                                <td>${u.telefono || '-'}</td>
                                 <td><span class="badge bg-info">${u.rol}</span></td>
                                 <td>
                                     <button class="btn btn-sm btn-danger" onclick="deleteUser(${u.id}, '${u.usuario}')">
@@ -1975,7 +2554,89 @@ async function loadAdminUsuarios() {
                                     </button>
                                 </td>
                             </tr>
-                        `).join('') : '<tr><td colspan="4" class="text-center">No hay usuarios</td></tr>'}
+                        `).join('') : '<tr><td colspan="6" class="text-center">No hay usuarios</td></tr>'}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+async function loadAdminTecnicos() {
+    const usuarios = await apiCall('/admin/usuarios');
+    const tecnicos = Array.isArray(usuarios) ? usuarios.filter(u => u.rol === 'tecnico') : [];
+
+    return `
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Gestión de Técnicos</h5>
+                <button class="btn btn-success btn-sm" onclick="toggleTecnicoForm()">
+                    <i class="fas fa-plus me-2"></i> Nuevo Técnico
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="tecnicoFormContainer" class="border p-3 mb-3 bg-light" style="display: none;">
+                    <h6 class="mb-3">Agregar Técnico</h6>
+                    <form id="newTecnicoForm" onsubmit="submitNewTecnico(event); return false;">
+                        <div class="row">
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Usuario *</label>
+                                <input type="text" class="form-control form-control-sm" id="newTecnicoUsuario" required>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Nombre Completo *</label>
+                                <input type="text" class="form-control form-control-sm" id="newTecnicoNombre" required>
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Cédula</label>
+                                <input type="text" class="form-control form-control-sm" id="newTecnicoCedula" placeholder="Opcional">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Teléfono</label>
+                                <input type="tel" class="form-control form-control-sm" id="newTecnicoTelefono" placeholder="Opcional">
+                            </div>
+                            <div class="col-md-6 mb-2">
+                                <label class="form-label">Contraseña *</label>
+                                <input type="password" class="form-control form-control-sm" id="newTecnicoPassword" required minlength="6">
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <button type="submit" class="btn btn-primary btn-sm">
+                                <i class="fas fa-save me-1"></i> Guardar Técnico
+                            </button>
+                            <button type="button" class="btn btn-secondary btn-sm ms-2" onclick="toggleTecnicoForm()">
+                                <i class="fas fa-times me-1"></i> Cancelar
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Usuario</th>
+                            <th>Nombre</th>
+                            <th>Cédula</th>
+                            <th>Teléfono</th>
+                            <th width="180">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${tecnicos.length > 0 ? tecnicos.map(t => `
+                            <tr>
+                                <td>${t.usuario}</td>
+                                <td>${t.nombre}</td>
+                                <td>${t.cedula || '-'}</td>
+                                <td>${t.telefono || '-'}</td>
+                                <td>
+                                    <button class="btn btn-sm btn-danger" onclick="deleteTecnico(${t.id}, '${t.nombre.replace(/'/g, "\\'")}')">
+                                        <i class="fas fa-trash"></i> Eliminar
+                                    </button>
+                                </td>
+                            </tr>
+                        `).join('') : '<tr><td colspan="5" class="text-center">No hay técnicos registrados</td></tr>'}
                     </tbody>
                 </table>
             </div>
@@ -2115,15 +2776,23 @@ async function loadAdminMarcas() {
                         <table class="table table-sm table-hover mb-0">
                             <thead class="table-light">
                                 <tr>
+                                    <th width="60">#</th>
                                     <th>Nombre</th>
-                                    <th width="200">Acciones</th>
+                                    <th width="280">Acciones</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                ${Array.isArray(marcas) ? marcas.map(m => `
+                                ${Array.isArray(marcas) ? marcas.map((m, index) => `
                                     <tr>
+                                        <td><small class="text-muted">${index + 1}</small></td>
                                         <td>${m.nombre}</td>
                                         <td>
+                                            <button class="btn btn-sm btn-outline-secondary me-1" onclick="moveMarca(${m.id}, 'up')" title="Subir marca">
+                                                <i class="fas fa-arrow-up"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-secondary me-1" onclick="moveMarca(${m.id}, 'down')" title="Bajar marca">
+                                                <i class="fas fa-arrow-down"></i>
+                                            </button>
                                             <button class="btn btn-sm btn-info me-1" onclick="showModelosForMarca(${m.id}, '${m.nombre}')">
                                                 <i class="fas fa-list"></i> Ver Modelos
                                             </button>
@@ -2132,7 +2801,7 @@ async function loadAdminMarcas() {
                                             </button>
                                         </td>
                                     </tr>
-                                `).join('') : '<tr><td colspan="2" class="text-center">No hay marcas</td></tr>'}
+                                `).join('') : '<tr><td colspan="3" class="text-center">No hay marcas</td></tr>'}
                             </tbody>
                         </table>
                     </div>
@@ -2261,8 +2930,10 @@ async function loadAdminFallas() {
 
 async function loadAdminConfig() {
     const config = await apiCall('/admin/configuracion');
+    const tecnicos = await apiCall('/tecnicos');
     const logoNavbarActual = config.logo_navbar_url?.valor || config.logo_url?.valor;
     const logoTicketActual = config.logo_ticket_url?.valor || config.logo_url?.valor;
+    const tecnicoDefaultId = parseInt(config.tecnico_default_id?.valor || '', 10) || null;
     
     return `
         <div class="card p-4">
@@ -2291,6 +2962,20 @@ async function loadAdminConfig() {
                     <label class="form-label">Email</label>
                     <input type="email" class="form-control" id="email_negocio"
                            value="${config.email_negocio?.valor || ''}">
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Técnico por defecto para nuevos ingresos</label>
+                    <select class="form-control" id="tecnico_default_id">
+                        <option value="">Sin técnico por defecto</option>
+                        ${Array.isArray(tecnicos) ? tecnicos.map(t => {
+                            const cedula = t.cedula ? ` · CC ${t.cedula}` : '';
+                            const telefono = t.telefono ? ` · ${t.telefono}` : '';
+                            const selected = tecnicoDefaultId === Number(t.id) ? 'selected' : '';
+                            return `<option value="${t.id}" ${selected}>${t.nombre}${cedula}${telefono}</option>`;
+                        }).join('') : ''}
+                    </select>
+                    <small class="text-muted">Se selecciona automáticamente en el campo “Técnico que repara” del panel de ingreso.</small>
                 </div>
                 
                 <div class="mb-3">
@@ -2411,7 +3096,8 @@ async function submitConfig(e) {
                 nombre_negocio: document.getElementById('nombre_negocio').value,
                 telefono_negocio: document.getElementById('telefono_negocio').value,
                 direccion_negocio: document.getElementById('direccion_negocio').value,
-                email_negocio: document.getElementById('email_negocio').value
+                email_negocio: document.getElementById('email_negocio').value,
+                tecnico_default_id: document.getElementById('tecnico_default_id')?.value || ''
             })
         });
         
@@ -2519,11 +3205,12 @@ async function verDetalles(ingresoId) {
                     </div>
                     <div class="card-body">
                         <p><strong>Fecha de ingreso:</strong> ${fechaIngreso}</p>
-                        <p><strong>Fecha de entrega:</strong> ${fechaEntrega}</p>
+                        <p><strong>Fecha de entrega:</strong> ${response.fecha_entrega ? fechaEntrega : 'Se registra automáticamente al marcar como ENTREGADO'}</p>
                         <p><strong>Estado del pago:</strong> ${clean(response.estado_pago)}</p>
                         <p><strong>Valor total:</strong> <strong>$${Number(response.valor_total || 0).toLocaleString('es-CO')}</strong></p>
                         <p><strong>Empleado:</strong> ${clean(response.empleado)}</p>
                         <p><strong>Técnico asignado:</strong> ${clean(response.tecnico)}</p>
+                        <p><strong>Datos técnico:</strong> ${response.tecnico_cedula || response.tecnico_telefono ? `${response.tecnico_cedula ? `CC ${clean(response.tecnico_cedula, '')}` : ''}${response.tecnico_cedula && response.tecnico_telefono ? ' · ' : ''}${response.tecnico_telefono ? clean(response.tecnico_telefono, '') : ''}` : 'Opcional (se registra desde Panel de Técnicos)'}</p>
                     </div>
                 </div>
             </div>
@@ -2627,6 +3314,8 @@ async function verDetallesTecnico(ingresoId) {
     }
     
     mainContent.innerHTML = `
+        <input type="hidden" id="detalleIngresoId" value="${ingresoId}">
+        <input type="hidden" id="detalleEstadoActual" value="${response.estado_ingreso}">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
             <h2 class="mb-0">Detalles del Ingreso: <strong>${response.numero_ingreso}</strong></h2>
             <button class="btn btn-secondary" onclick="loadPage('tecnico')">
@@ -2695,8 +3384,8 @@ async function verDetallesTecnico(ingresoId) {
                                                            onchange="updateValor(${f.id}, this.value)">
                                                 </td>
                                                 <td>
-                                                    <select class="form-select form-select-sm" 
-                                                            onchange="updateEstado(${f.id}, this.value)">
+                                                        <select class="form-select form-select-sm" 
+                                                            onchange="onDetalleFallaEstadoChange(${ingresoId}, ${f.id}, this.value)">
                                                         <option value="pendiente" ${f.estado_falla === 'pendiente' ? 'selected' : ''}>Pendiente</option>
                                                         <option value="reparada" ${f.estado_falla === 'reparada' ? 'selected' : ''}>Reparada</option>
                                                         <option value="no_reparable" ${f.estado_falla === 'no_reparable' ? 'selected' : ''}>No Reparable</option>
@@ -2729,23 +3418,23 @@ async function verDetallesTecnico(ingresoId) {
                     </div>
                     <div class="card-body">
                         <div class="d-grid gap-2">
-                            ${response.estado_ingreso !== 'entregado' ? `
-                                <select class="form-select mb-2" id="estadoSelect" value="${response.estado_ingreso}">
-                                    <option value="pendiente" ${response.estado_ingreso === 'pendiente' ? 'selected' : ''}>Pendiente</option>
-                                    <option value="en_reparacion" ${response.estado_ingreso === 'en_reparacion' ? 'selected' : ''}>En Reparación</option>
-                                    <option value="reparado" ${response.estado_ingreso === 'reparado' ? 'selected' : ''}>Reparado</option>
-                                    <option value="no_reparable" ${response.estado_ingreso === 'no_reparable' ? 'selected' : ''}>No Reparable</option>
-                                    <option value="entregado" ${response.estado_ingreso === 'entregado' ? 'selected' : ''}>Entregado</option>
-                                </select>
-                                <button class="btn btn-warning" onclick="updateIngresoEstado(${ingresoId})">
-                                    <i class="fas fa-edit me-2"></i>Actualizar Estado
-                                </button>
-                            ` : `
-                                <div class="alert alert-success mb-2">
-                                    <i class="fas fa-check me-2"></i>
-                                    <strong>Ingreso Entregado</strong>
+                            <select class="form-select mb-2" id="estadoSelect_${ingresoId}" onchange="onDetalleIngresoEstadoChange(${ingresoId}, this.value)">
+                                <option value="pendiente" ${response.estado_ingreso === 'pendiente' ? 'selected' : ''}>Pendiente</option>
+                                <option value="en_reparacion" ${response.estado_ingreso === 'en_reparacion' ? 'selected' : ''}>En Reparación</option>
+                                <option value="reparado" ${response.estado_ingreso === 'reparado' ? 'selected' : ''}>Reparado</option>
+                                <option value="no_reparable" ${response.estado_ingreso === 'no_reparable' ? 'selected' : ''}>No Reparable</option>
+                                <option value="entregado" ${response.estado_ingreso === 'entregado' ? 'selected' : ''}>Entregado</option>
+                            </select>
+                            <small class="text-muted">Cambia el estado desde la lista para aplicar inmediatamente.</small>
+                            ${['reparado', 'entregado'].includes(response.estado_ingreso) ? `
+                                <div class="border rounded p-2 bg-light">
+                                    <label class="form-label mb-1"><strong>Garantía</strong></label>
+                                    <textarea class="form-control form-control-sm mb-2" id="garantiaComentario_${ingresoId}" rows="3" placeholder="Motivo de garantía (obligatorio)"></textarea>
+                                    <button class="btn btn-warning btn-sm w-100" onclick="procesarGarantiaEntregado(${ingresoId})">
+                                        <i class="fas fa-shield-alt me-2"></i>Ingresar por Garantía
+                                    </button>
                                 </div>
-                            `}
+                            ` : ''}
                             <button class="btn btn-success" onclick="printTicket(${ingresoId})">
                                 <i class="fas fa-print me-2"></i> Imprimir Ticket
                             </button>
@@ -3346,8 +4035,9 @@ async function addNewFalla(ingresoId) {
         }
         
         // Obtener fallas ya agregadas a este ingreso
-        const ingresoFallas = await apiCall(`/ingresos/${ingresoId}/fallas`);
-        const fallaIds = ingresoFallas.map(f => f.id);
+        const ingreso = await apiCall(`/ingresos/${ingresoId}`);
+        const ingresoFallas = Array.isArray(ingreso?.fallas) ? ingreso.fallas : [];
+        const fallaIds = ingresoFallas.map(f => f.falla_id);
         
         // Filtrar fallas no agregadas
         const fallasDisponibles = fallas.filter(f => !fallaIds.includes(f.id));
@@ -3384,7 +4074,8 @@ async function addNewFalla(ingresoId) {
         
         if (response.success || response.id) {
             showAlert(`Falla "${fallaSeleccionada.nombre}" agregada correctamente`, 'success');
-            loadPage('registros');
+            await syncIngresoEstadoFromFallas(ingresoId);
+            verDetallesTecnico(ingresoId);
         } else {
             showAlert(response.error || 'Error al agregar falla', 'danger');
         }
@@ -3433,9 +4124,23 @@ async function updateEstado(ingresoFallaId, nuevoEstado) {
         
         if (response.success) {
             showAlert(`Estado de falla actualizado a "${nuevoEstado}"`, 'success');
+            if (nuevoEstado === 'no_reparable') {
+                const ingresoId = Number(document.getElementById('detalleIngresoId')?.value);
+                if (ingresoId) {
+                    await apiCall(`/ingresos/${ingresoId}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ estado_ingreso: 'no_reparable' })
+                    });
+                    showAlert('Ingreso marcado como No Reparable', 'info');
+                }
+            }
             // Recargar la página actual para mostrar cambios
             if (window.location.hash.includes('tecnico')) {
                 loadTecnicoPanel();
+            }
+            const ingresoId = Number(document.getElementById('detalleIngresoId')?.value);
+            if (ingresoId) {
+                verDetallesTecnico(ingresoId);
             }
         } else {
             showAlert('Error al actualizar estado: ' + (response.error || 'desconocido'), 'danger');
@@ -3447,7 +4152,7 @@ async function updateEstado(ingresoFallaId, nuevoEstado) {
 }
 
 // Función para remover falla de un ingreso
-async function removeFalla(ingresoId, fallaId) {
+async function removeFalla(ingresoFallaId) {
     if (!await showConfirmModal('¿Estás seguro de que deseas remover esta falla del ingreso?', {
         title: 'Confirmar remoción',
         confirmText: 'Remover'
@@ -3456,13 +4161,16 @@ async function removeFalla(ingresoId, fallaId) {
     }
     
     try {
-        const response = await apiCall(`/ingresos/${ingresoId}/fallas/${fallaId}`, {
+        const response = await apiCall(`/ingreso-fallas/${ingresoFallaId}`, {
             method: 'DELETE'
         });
         
         if (response.success) {
             showAlert('Falla removida correctamente', 'success');
-            loadPage('registros');
+            const ingresoId = Number(document.getElementById('detalleIngresoId')?.value);
+            if (ingresoId) {
+                verDetallesTecnico(ingresoId);
+            }
         } else {
             showAlert(response.error || 'Error al remover falla', 'danger');
         }
@@ -3472,25 +4180,145 @@ async function removeFalla(ingresoId, fallaId) {
     }
 }
 async function updateIngresoEstado(ingresoId) {
-    const estadoSelect = document.getElementById('estadoSelect');
+    const estadoSelect = document.getElementById(`estadoSelect_${ingresoId}`) || document.getElementById('estadoSelect');
+    if (!estadoSelect) {
+        showAlert('No se encontró selector de estado', 'warning');
+        return;
+    }
     const nuevoEstado = estadoSelect.value;
-    
+    await onDetalleIngresoEstadoChange(ingresoId, nuevoEstado);
+}
+
+async function onDetalleIngresoEstadoChange(ingresoId, nuevoEstado) {
     if (!nuevoEstado) {
         showAlert('Por favor selecciona un estado', 'warning');
         return;
     }
-    
+
+    const estadoActual = document.getElementById('detalleEstadoActual')?.value;
+    if (estadoActual && estadoActual === nuevoEstado) {
+        return;
+    }
+
+    if (nuevoEstado === 'entregado') {
+        await cambiarEstadoIngreso(ingresoId, nuevoEstado);
+        return;
+    }
+
+    const response = await setIngresoEstado(ingresoId, nuevoEstado);
+
+    if (response && response.success) {
+        showAlert('Estado actualizado correctamente', 'success');
+        verDetallesTecnico(ingresoId);
+    } else {
+        showAlert(response?.error || 'Error al actualizar el estado', 'danger');
+    }
+}
+
+async function onDetalleFallaEstadoChange(ingresoId, ingresoFallaId, nuevoEstado) {
+    await updateEstado(ingresoFallaId, nuevoEstado);
+    if (ingresoId) {
+        await syncIngresoEstadoFromFallas(ingresoId);
+        verDetallesTecnico(ingresoId);
+    }
+}
+
+async function syncIngresoEstadoFromFallas(ingresoId) {
+    try {
+        const ingreso = await apiCall(`/ingresos/${ingresoId}`);
+        const fallas = Array.isArray(ingreso?.fallas) ? ingreso.fallas : [];
+        const notas = Array.isArray(ingreso?.notas) ? ingreso.notas : [];
+
+        const ultimasNotasGarantia = notas.filter((nota) => /\[GARANTIA\]/i.test(nota.contenido || ''));
+        const ultimaNotaGarantia = ultimasNotasGarantia.length > 0 ? ultimasNotasGarantia[0] : null;
+        const garantiaAbierta = !!ultimaNotaGarantia && !/\[GARANTIA\]\[RESUELTA\]/i.test(ultimaNotaGarantia.contenido || '');
+
+        if (garantiaAbierta) {
+            return;
+        }
+
+        if (fallas.length === 0) {
+            return;
+        }
+
+        let estadoObjetivo = 'en_reparacion';
+        if (fallas.some(f => f.estado_falla === 'no_reparable')) {
+            estadoObjetivo = 'no_reparable';
+        } else if (fallas.every(f => f.estado_falla === 'reparada')) {
+            estadoObjetivo = 'reparado';
+        }
+
+        if (ingreso.estado_ingreso !== estadoObjetivo) {
+            await setIngresoEstado(ingresoId, estadoObjetivo);
+        }
+    } catch (error) {
+        console.error('Error sincronizando estado por fallas:', error);
+    }
+}
+
+async function setIngresoEstado(ingresoId, nuevoEstado) {
     const response = await apiCall(`/ingresos/${ingresoId}`, {
         method: 'PUT',
         body: JSON.stringify({ estado_ingreso: nuevoEstado })
     });
-    
+
     if (response && response.success) {
-        showAlert('Estado actualizado correctamente', 'success');
-        // Recarga los detalles técnicos
+        return response;
+    }
+
+    const fallbackResponse = await apiCall(`/ingresos/${ingresoId}/estado`, {
+        method: 'PUT',
+        body: JSON.stringify({ estado: nuevoEstado })
+    });
+
+    if (fallbackResponse && fallbackResponse.success) {
+        return fallbackResponse;
+    }
+
+    return response || fallbackResponse;
+}
+
+async function procesarGarantiaEntregado(ingresoId) {
+    const comentarioEl = document.getElementById(`garantiaComentario_${ingresoId}`);
+    const comentario = (comentarioEl?.value || '').trim();
+    const estadoActual = document.getElementById('detalleEstadoActual')?.value;
+
+    if (!comentario) {
+        showAlert('Debes escribir el motivo de garantía', 'warning');
+        return;
+    }
+
+    if (!await showConfirmModal('¿Deseas registrar este caso en la pestaña de garantías?', {
+        title: 'Confirmar garantía',
+        confirmText: 'Sí, registrar',
+        confirmClass: 'btn-warning'
+    })) {
+        return;
+    }
+
+    try {
+        const notaResponse = await apiCall(`/ingresos/${ingresoId}/notas`, {
+            method: 'POST',
+            body: JSON.stringify({
+                contenido: `[GARANTIA][ABIERTA]: ${comentario}`,
+                tipo: 'tecnica'
+            })
+        });
+
+        if (!notaResponse || (notaResponse.error && !notaResponse.id)) {
+            showAlert(notaResponse?.error || 'No se pudo guardar el comentario de garantía', 'danger');
+            return;
+        }
+
+        if (estadoActual) {
+            await setIngresoEstado(ingresoId, estadoActual);
+        }
+
+        showAlert('Garantía registrada correctamente en su pestaña dedicada', 'success');
         verDetallesTecnico(ingresoId);
-    } else {
-        showAlert(response?.error || 'Error al actualizar el estado', 'danger');
+    } catch (error) {
+        console.error('Error en procesarGarantiaEntregado:', error);
+        showAlert('Error de conexión al procesar garantía', 'danger');
     }
 }
 
@@ -3511,6 +4339,8 @@ async function submitNewUser(event) {
     
     const usuario = document.getElementById('newUserUsuario').value.trim();
     const nombre = document.getElementById('newUserNombre').value.trim();
+    const cedula = document.getElementById('newUserCedula').value.trim();
+    const telefono = document.getElementById('newUserTelefono').value.trim();
     const password = document.getElementById('newUserPassword').value;
     const rol = document.getElementById('newUserRol').value;
     
@@ -3526,7 +4356,9 @@ async function submitNewUser(event) {
                 usuario,
                 nombre,
                 rol,
-                contraseña: password
+                contraseña: password,
+                cedula,
+                telefono
             })
         });
         
@@ -3541,6 +4373,76 @@ async function submitNewUser(event) {
         }
     } catch (error) {
         console.error('Error al crear usuario:', error);
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+function toggleTecnicoForm() {
+    const form = document.getElementById('tecnicoFormContainer');
+    if (!form) return;
+    if (form.style.display === 'none') {
+        form.style.display = 'block';
+        document.getElementById('newTecnicoForm')?.reset();
+    } else {
+        form.style.display = 'none';
+    }
+}
+
+async function submitNewTecnico(event) {
+    event.preventDefault();
+
+    const usuario = document.getElementById('newTecnicoUsuario').value.trim();
+    const nombre = document.getElementById('newTecnicoNombre').value.trim();
+    const cedula = document.getElementById('newTecnicoCedula').value.trim();
+    const telefono = document.getElementById('newTecnicoTelefono').value.trim();
+    const password = document.getElementById('newTecnicoPassword').value;
+
+    if (!usuario || !nombre || !password) {
+        showAlert('Usuario, nombre y contraseña son obligatorios', 'danger');
+        return;
+    }
+
+    try {
+        const response = await apiCall('/admin/usuarios', {
+            method: 'POST',
+            body: JSON.stringify({
+                usuario,
+                nombre,
+                rol: 'tecnico',
+                contraseña: password,
+                cedula,
+                telefono
+            })
+        });
+
+        if (response && response.id) {
+            showAlert(`Técnico "${nombre}" creado correctamente`, 'success');
+            adminActiveTab = 'tecnicos';
+            loadPage('admin');
+        } else {
+            showAlert(response?.error || 'Error al crear técnico', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+async function deleteTecnico(id, nombre) {
+    if (!await showConfirmModal(`¿Eliminar el técnico "${nombre}"?`)) return;
+
+    try {
+        const response = await apiCall(`/admin/usuarios/${id}`, {
+            method: 'DELETE'
+        });
+
+        if (response && response.success) {
+            showAlert(`Técnico "${nombre}" eliminado`, 'success');
+            adminActiveTab = 'tecnicos';
+            loadPage('admin');
+        } else {
+            showAlert(response?.error || 'Error al eliminar técnico', 'danger');
+        }
+    } catch (error) {
         showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
     }
 }
@@ -3646,11 +4548,25 @@ async function showModelosForMarca(marcaId, marcaNombre) {
     
     if (Array.isArray(modelos) && modelos.length > 0) {
         html += `<table class="table table-sm">
+                    <thead class="table-light">
+                        <tr>
+                            <th width="60">#</th>
+                            <th>Modelo</th>
+                            <th width="130">Acciones</th>
+                        </tr>
+                    </thead>
                     <tbody>
-                        ${modelos.map(m => `
+                        ${modelos.map((m, index) => `
                             <tr>
+                                <td><small class="text-muted">${index + 1}</small></td>
                                 <td>${m.nombre}</td>
-                                <td width="80">
+                                <td width="130">
+                                    <button class="btn btn-sm btn-outline-secondary me-1" onclick="moveModelo(${m.id}, ${marcaId}, '${marcaNombre.replace(/'/g, "\\'")}', 'up')" title="Subir modelo">
+                                        <i class="fas fa-arrow-up"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary me-1" onclick="moveModelo(${m.id}, ${marcaId}, '${marcaNombre.replace(/'/g, "\\'")}', 'down')" title="Bajar modelo">
+                                        <i class="fas fa-arrow-down"></i>
+                                    </button>
                                     <button class="btn btn-sm btn-danger" onclick="deleteModelo(${m.id}, '${m.nombre}')">
                                         <i class="fas fa-trash"></i>
                                     </button>
@@ -3664,6 +4580,43 @@ async function showModelosForMarca(marcaId, marcaNombre) {
     }
     
     container.innerHTML = html;
+}
+
+async function moveMarca(id, direction) {
+    try {
+        const response = await apiCall(`/marcas/${id}/orden`, {
+            method: 'PUT',
+            body: JSON.stringify({ direction })
+        });
+
+        if (response && response.success) {
+            showAlert('Orden de marca actualizado', 'success');
+            adminActiveTab = 'marcas';
+            loadPage('admin');
+        } else {
+            showAlert(response?.error || 'No se pudo reorganizar la marca', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error al reorganizar marca: ' + error.message, 'danger');
+    }
+}
+
+async function moveModelo(id, marcaId, marcaNombre, direction) {
+    try {
+        const response = await apiCall(`/modelos/${id}/orden`, {
+            method: 'PUT',
+            body: JSON.stringify({ direction })
+        });
+
+        if (response && response.success) {
+            showAlert('Orden de modelo actualizado', 'success');
+            await showModelosForMarca(marcaId, marcaNombre);
+        } else {
+            showAlert(response?.error || 'No se pudo reorganizar el modelo', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error al reorganizar modelo: ' + error.message, 'danger');
+    }
 }
 
 async function submitNewModelo(event) {

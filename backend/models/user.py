@@ -17,37 +17,37 @@ class User:
     @staticmethod
     def get_by_id(user_id):
         """Obtiene un usuario por ID"""
-        query = "SELECT id, usuario, nombre, rol FROM usuarios WHERE id = ? AND activo = 1"
+        query = "SELECT id, usuario, nombre, rol, telefono, cedula FROM usuarios WHERE id = ? AND activo = 1"
         result = db.execute_single(query, (user_id,))
         return dict(result) if result else None
     
     @staticmethod
     def get_all():
         """Obtiene todos los usuarios activos"""
-        query = "SELECT id, usuario, nombre, rol, fecha_creacion FROM usuarios WHERE activo = 1 ORDER BY nombre"
+        query = "SELECT id, usuario, nombre, rol, telefono, cedula, fecha_creacion FROM usuarios WHERE activo = 1 ORDER BY nombre"
         results = db.execute_query(query)
         return [dict(row) for row in results]
 
     @staticmethod
     def get_tecnicos():
         """Obtiene técnicos activos"""
-        query = "SELECT id, nombre FROM usuarios WHERE activo = 1 AND rol = 'tecnico' ORDER BY nombre"
+        query = "SELECT id, nombre, telefono, cedula FROM usuarios WHERE activo = 1 AND rol = 'tecnico' ORDER BY nombre"
         results = db.execute_query(query)
         return [dict(row) for row in results]
     
     @staticmethod
-    def create(usuario, contraseña, nombre, rol):
+    def create(usuario, contraseña, nombre, rol, telefono=None, cedula=None):
         """Crea un nuevo usuario"""
         hashed_password = generate_password_hash(contraseña)
         query = '''
-        INSERT INTO usuarios (usuario, contraseña, nombre, rol)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO usuarios (usuario, contraseña, nombre, rol, telefono, cedula)
+        VALUES (?, ?, ?, ?, ?, ?)
         '''
-        user_id = db.execute_update(query, (usuario, hashed_password, nombre, rol))
+        user_id = db.execute_update(query, (usuario, hashed_password, nombre, rol, telefono, cedula))
         return user_id
     
     @staticmethod
-    def update(user_id, nombre=None, rol=None, contraseña=None):
+    def update(user_id, nombre=None, rol=None, contraseña=None, telefono=None, cedula=None):
         """Actualiza datos de un usuario"""
         updates = []
         params = []
@@ -64,6 +64,14 @@ class User:
             hashed = generate_password_hash(contraseña)
             updates.append("contraseña = ?")
             params.append(hashed)
+
+        if telefono is not None:
+            updates.append("telefono = ?")
+            params.append(telefono)
+
+        if cedula is not None:
+            updates.append("cedula = ?")
+            params.append(cedula)
         
         if not updates:
             return False
