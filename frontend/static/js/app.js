@@ -947,56 +947,56 @@ async function loadIngresoForm() {
                 </div>
             </div>
             
-            <!-- PASO 3: ESTADO Y FALLAS -->
+            <!-- PASO 3: ESTADO DEL EQUIPO -->
             <div id="paso3" class="wizard-step" style="display: none;">
                 <div class="wizard-header">
                     <span class="badge bg-primary">Paso 3</span>
-                    <h4 class="mb-0">Estado y Fallas del Equipo</h4>
+                    <h4 class="mb-0">Estado del Equipo</h4>
                 </div>
                 
                 <div class="wizard-content">
                     <h5 class="mb-3">Estado del Equipo</h5>
                     <div class="row mb-3">
-                        <div class="col-12 col-md-6 mb-3">
+                        <div class="col-12 col-md-6 col-lg-4 mb-3">
                             <label class="form-label">Apagado</label>
                             <select class="form-control form-control-lg" id="estado_apagado_select">
                                 <option value="NO" selected>NO</option>
                                 <option value="SI">SI</option>
                             </select>
                         </div>
-                        <div class="col-12 col-md-6 mb-3">
+                        <div class="col-12 col-md-6 col-lg-4 mb-3">
                             <label class="form-label">Garantía</label>
                             <select class="form-control form-control-lg" id="garantia_select">
                                 <option value="NO" selected>NO</option>
                                 <option value="SI">SI</option>
                             </select>
                         </div>
-                        <div class="col-12 col-md-6 mb-3">
+                        <div class="col-12 col-md-6 col-lg-4 mb-3">
                             <label class="form-label">Estuche</label>
                             <select class="form-control form-control-lg" id="estuche_select">
                                 <option value="NO" selected>NO</option>
                                 <option value="SI">SI</option>
                             </select>
                         </div>
-                        <div class="col-12 col-md-6 mb-3">
+                        <div class="col-12 col-md-6 col-lg-4 mb-3">
                             <label class="form-label">Bandeja SIM (¿tiene?)</label>
                             <select class="form-control form-control-lg" id="bandeja_sim_select">
                                 <option value="NO" selected>NO</option>
                                 <option value="SI">SI</option>
                             </select>
                         </div>
-                        <div class="col-12 col-md-6 mb-3" id="colorBandejaDiv" style="display: none;">
+                        <div class="col-12 col-md-6 col-lg-4 mb-3" id="colorBandejaDiv" style="display: none;">
                             <label class="form-label">Color de Bandeja SIM</label>
                             <input type="text" class="form-control form-control-lg" id="color_bandeja_sim" placeholder="Ej: Negro, Plateado">
                         </div>
-                        <div class="col-12 col-md-6 mb-3">
+                        <div class="col-12 col-md-6 col-lg-4 mb-3">
                             <label class="form-label">Visor o glass partido</label>
                             <select class="form-control form-control-lg" id="visor_partido_select">
                                 <option value="NO" selected>NO</option>
                                 <option value="SI">SI</option>
                             </select>
                         </div>
-                        <div class="col-12 col-md-6 mb-3">
+                        <div class="col-12 col-md-6 col-lg-4 mb-3">
                             <label class="form-label">Estado de botones</label>
                             <select class="form-control form-control-lg" id="estado_botones_detalle">
                                 <option value="BUENOS COMPLETOS" selected>BUENOS COMPLETOS</option>
@@ -1004,7 +1004,7 @@ async function loadIngresoForm() {
                                 <option value="NO TIENE">NO TIENE</option>
                             </select>
                         </div>
-                        <div class="col-12 col-md-6 mb-3">
+                        <div class="col-12 col-md-6 col-lg-4 mb-3">
                             <label class="form-label">Tiene clave</label>
                             <select class="form-control form-control-lg" id="tiene_clave" onchange="toggleClave()">
                                 <option value="NO" selected>NO</option>
@@ -1029,7 +1029,25 @@ async function loadIngresoForm() {
                         </div>
                     </div>
                     
-                    <h5 class="mb-3">Fallas Reportadas</h5>
+                    <div class="wizard-nav">
+                        <button type="button" class="btn btn-secondary btn-lg me-2" onclick="prevWizardStep()">
+                            <i class="fas fa-arrow-left me-2"></i> Anterior
+                        </button>
+                        <button type="button" class="btn btn-primary btn-lg flex-grow-1" onclick="nextWizardStep()">
+                            <i class="fas fa-arrow-right me-2"></i> Siguiente: Fallas reportadas
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- PASO 4: FALLAS REPORTADAS -->
+            <div id="paso4" class="wizard-step" style="display: none;">
+                <div class="wizard-header">
+                    <span class="badge bg-primary">Paso 4</span>
+                    <h4 class="mb-0">Fallas Reportadas</h4>
+                </div>
+                
+                <div class="wizard-content">
                     <div class="fallas-selector mb-3" id="fallasSelector">
                         <div class="fallas-toolbar">
                             <input type="text" class="form-control" id="fallasSearch" placeholder="Buscar falla...">
@@ -1050,7 +1068,7 @@ async function loadIngresoForm() {
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="wizard-nav">
                         <button type="button" class="btn btn-secondary btn-lg me-2" onclick="prevWizardStep()">
                             <i class="fas fa-arrow-left me-2"></i> Anterior
@@ -1061,11 +1079,11 @@ async function loadIngresoForm() {
                     </div>
                 </div>
             </div>
-            
-            <!-- PASO 4: RESUMEN -->
-            <div id="paso4" class="wizard-step" style="display: none;">
+
+            <!-- PASO 5: RESUMEN -->
+            <div id="paso5" class="wizard-step" style="display: none;">
                 <div class="wizard-header">
-                    <span class="badge bg-primary">Paso 4</span>
+                    <span class="badge bg-primary">Paso 5</span>
                     <h4 class="mb-0">Descripción y Resumen</h4>
                 </div>
                 
@@ -1264,6 +1282,7 @@ async function submitIngreso(e) {
     clearWizardStepAlert(2);
     clearWizardStepAlert(3);
     clearWizardStepAlert(4);
+    clearWizardStepAlert(5);
     
     // Validar campos requeridos
     if (!datos.cliente_nombre || !datos.cliente_apellido || !datos.cliente_cedula) {
@@ -1291,17 +1310,17 @@ async function submitIngreso(e) {
     }
 
     if (!datos.fallas_iniciales.length) {
-        currentWizardStep = 3;
+        currentWizardStep = 4;
         updateWizardDisplay();
-        showWizardStepAlert(3, 'Debe seleccionar al menos una falla', 'danger');
+        showWizardStepAlert(4, 'Debe seleccionar al menos una falla', 'danger');
         isSubmittingIngreso = false;
         return;
     }
 
     if (!datos.falla_general) {
-        currentWizardStep = 4;
+        currentWizardStep = 5;
         updateWizardDisplay();
-        showWizardStepAlert(4, 'Por favor complete el Detalle del Ingreso', 'danger');
+        showWizardStepAlert(5, 'Por favor complete el Detalle del Ingreso', 'danger');
         isSubmittingIngreso = false;
         return;
     }
@@ -1317,7 +1336,7 @@ async function submitIngreso(e) {
         showLoading(false);
         
         if (!response) {
-            showWizardStepAlert(4, 'Error de conexión con el servidor', 'danger');
+            showWizardStepAlert(5, 'Error de conexión con el servidor', 'danger');
             return;
         }
         
@@ -1327,19 +1346,19 @@ async function submitIngreso(e) {
                     ? ' (ojo: nombre/apellido no coinciden con el registro existente)'
                     : '';
                 showWizardStepAlert(
-                    4,
+                    5,
                     `Cliente ya existe por cédula. Último ingreso: N° ${response.ingreso_existente.numero_ingreso}${mismatchHint}.`,
                     'warning'
                 );
                 return;
             }
-            showWizardStepAlert(4, 'Error: ' + response.error, 'danger');
+            showWizardStepAlert(5, 'Error: ' + response.error, 'danger');
             return;
         }
         
         if (response.numero_ingreso || response.id) {
             const numeroIngreso = response.numero_ingreso || response.id;
-            showWizardStepAlert(4, `¡Ingreso creado exitosamente! Número: ${numeroIngreso}`, 'success');
+            showWizardStepAlert(5, `¡Ingreso creado exitosamente! Número: ${numeroIngreso}`, 'success');
             document.getElementById('ingresoForm').reset();
 
             if (response.id) {
@@ -1351,12 +1370,12 @@ async function submitIngreso(e) {
                 loadPage('registros');
             }, 1500);
         } else {
-            showWizardStepAlert(4, 'Error: Respuesta inesperada del servidor', 'danger');
+            showWizardStepAlert(5, 'Error: Respuesta inesperada del servidor', 'danger');
         }
     } catch (error) {
         console.error('Error en submitIngreso:', error);
         showLoading(false);
-        showWizardStepAlert(4, 'Error al crear ingreso: ' + error.message, 'danger');
+        showWizardStepAlert(5, 'Error al crear ingreso: ' + error.message, 'danger');
     } finally {
         isSubmittingIngreso = false;
     }
@@ -5195,13 +5214,16 @@ async function nextWizardStep() {
         clearWizardStepAlert(2);
         currentWizardStep = 3;
     } else if (currentWizardStep === 3) {
-        const fallasSeleccionadas = document.querySelectorAll('.falla-checkbox:checked').length;
-        if (!fallasSeleccionadas) {
-            showWizardStepAlert(3, 'Debe seleccionar al menos una falla', 'warning');
-            return;
-        }
         clearWizardStepAlert(3);
         currentWizardStep = 4;
+    } else if (currentWizardStep === 4) {
+        const fallasSeleccionadas = document.querySelectorAll('.falla-checkbox:checked').length;
+        if (!fallasSeleccionadas) {
+            showWizardStepAlert(4, 'Debe seleccionar al menos una falla', 'warning');
+            return;
+        }
+        clearWizardStepAlert(4);
+        currentWizardStep = 5;
     }
     
     updateWizardDisplay();
@@ -5221,9 +5243,10 @@ function updateWizardDisplay() {
         const paso2 = document.getElementById('paso2');
         const paso3 = document.getElementById('paso3');
         const paso4 = document.getElementById('paso4');
+        const paso5 = document.getElementById('paso5');
         
-        if (!paso1 || !paso2 || !paso3 || !paso4) {
-            console.error('Paso elements not found:', {paso1, paso2, paso3, paso4});
+        if (!paso1 || !paso2 || !paso3 || !paso4 || !paso5) {
+            console.error('Paso elements not found:', {paso1, paso2, paso3, paso4, paso5});
             return;
         }
         
@@ -5231,6 +5254,7 @@ function updateWizardDisplay() {
         paso2.style.display = 'none';
         paso3.style.display = 'none';
         paso4.style.display = 'none';
+        paso5.style.display = 'none';
         
         // Mostrar el paso actual
         document.getElementById(`paso${currentWizardStep}`).style.display = 'block';

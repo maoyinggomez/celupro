@@ -918,6 +918,74 @@ input[type="file"] {
     white-space: nowrap;
 }
 
+@media (min-width: 992px) {
+    .ingreso-page #paso3 .wizard-content,
+    .ingreso-page #paso5 .wizard-content {
+        max-height: calc(100vh - var(--navbar-height) - 210px);
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 1rem;
+    }
+
+    .ingreso-page #paso4 .wizard-content {
+        max-height: calc(100vh - var(--navbar-height) - 170px);
+        min-height: clamp(24rem, 58vh, 34rem);
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 1rem;
+    }
+
+    .ingreso-page #paso3 .wizard-content h5 {
+        margin-bottom: 0.65rem !important;
+    }
+
+    .ingreso-page #paso3 .row.mb-3 {
+        margin-bottom: 0.3rem !important;
+    }
+
+    .ingreso-page #paso3 .mb-3 {
+        margin-bottom: 0.55rem !important;
+    }
+
+    .ingreso-page #paso3 .form-control.form-control-lg,
+    .ingreso-page #paso3 .form-select.form-select-lg,
+    .ingreso-page #paso3 .form-control.form-select-lg,
+    .ingreso-page #paso3 .form-control {
+        min-height: 2.35rem;
+        padding-top: 0.4rem;
+        padding-bottom: 0.4rem;
+    }
+
+    .ingreso-page #paso4 .fallas-list {
+        max-height: min(52vh, 480px);
+    }
+
+    .ingreso-page #paso4 .fallas-toolbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .ingreso-page #paso4 #fallasDropdownToggle {
+        display: none;
+    }
+
+    .ingreso-page #paso4 .fallas-dropdown {
+        position: static;
+        display: block;
+        margin-top: 0.55rem;
+        border: none;
+        box-shadow: none;
+        background: transparent;
+        padding: 0;
+    }
+
+    .ingreso-page #paso4 .fallas-list {
+        border: 1px solid #dbe3ff;
+        border-radius: 12px;
+        background: #f8faff;
+        padding: 0.35rem;
+    }
+}
+
 @media (max-width: 992px) {
     .ingreso-page {
         max-width: 100%;
@@ -1359,6 +1427,45 @@ input[type="file"] {
 .login-page #loginForm .mb-3,
 .login-page #loginForm .mb-4 {
     margin-bottom: var(--space-stack) !important;
+}
+
+.login-page .password-field {
+    position: relative;
+}
+
+.login-page .password-field .form-control {
+    padding-right: 3rem;
+}
+
+.login-page .password-field .password-toggle {
+    position: absolute;
+    top: 50%;
+    right: 0.95rem;
+    transform: translateY(-50%);
+    z-index: 3;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    color: #6778a9;
+    padding: 0;
+    width: 1.4rem;
+    height: 1.4rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.login-page .password-field .password-toggle:hover,
+.login-page .password-field .password-toggle:focus,
+.login-page .password-field .password-toggle:active {
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    color: #4e5f90;
+}
+
+.login-page .password-field .password-toggle:focus-visible {
+    outline: none;
 }
 
 .login-page #loginForm .btn-primary {
