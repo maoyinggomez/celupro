@@ -282,6 +282,22 @@ def delete_falla(falla_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
+@app.route('/api/fallas/<int:falla_id>/orden', methods=['PUT'])
+@role_required('admin')
+def reorder_falla(falla_id):
+    """Reordena una falla (up/down)"""
+    data = request.get_json() or {}
+    direction = (data.get('direction') or '').lower()
+
+    if direction not in ('up', 'down'):
+        return jsonify({'error': 'Dirección inválida. Usa up o down'}), 400
+
+    try:
+        moved = Falla.move(falla_id, direction)
+        return jsonify({'success': moved}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
 # ===== RUTAS DE INGRESOS TÉCNICOS =====
 @app.route('/api/ingresos', methods=['POST'])
 @role_required('admin', 'empleado', 'tecnico')

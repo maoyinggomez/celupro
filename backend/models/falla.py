@@ -6,22 +6,24 @@ class Falla:
     @staticmethod
     def get_all():
         """Obtiene todas las fallas del catálogo"""
-        query = "SELECT id, nombre, descripcion, precio_sugerido FROM fallas_catalogo ORDER BY nombre"
+        query = "SELECT id, nombre, descripcion, precio_sugerido, orden FROM fallas_catalogo ORDER BY orden ASC, nombre ASC"
         results = db.execute_query(query)
         return [dict(row) for row in results]
     
     @staticmethod
     def get_by_id(falla_id):
         """Obtiene una falla por ID"""
-        query = "SELECT id, nombre, descripcion, precio_sugerido FROM fallas_catalogo WHERE id = ?"
+        query = "SELECT id, nombre, descripcion, precio_sugerido, orden FROM fallas_catalogo WHERE id = ?"
         result = db.execute_single(query, (falla_id,))
         return dict(result) if result else None
     
     @staticmethod
     def create(nombre, descripcion, precio_sugerido):
         """Crea una nueva falla"""
-        query = "INSERT INTO fallas_catalogo (nombre, descripcion, precio_sugerido) VALUES (?, ?, ?)"
-        falla_id = db.execute_update(query, (nombre, descripcion, precio_sugerido))
+        next_order_query = "SELECT COALESCE(MAX(orden), 0) + 1 AS next_order FROM fallas_catalogo"
+        next_order = db.execute_single(next_order_query)['next_order']
+        query = "INSERT INTO fallas_catalogo (nombre, descripcion, precio_sugerido, orden) VALUES (?, ?, ?, ?)"
+        falla_id = db.execute_update(query, (nombre, descripcion, precio_sugerido, next_order))
         return falla_id
     
     @staticmethod
@@ -36,6 +38,31 @@ class Falla:
         """Elimina una falla del catálogo"""
         query = "DELETE FROM fallas_catalogo WHERE id = ?"
         db.execute_update(query, (falla_id,))
+        return True
+
+    @staticmethod
+    def move(falla_id, direction):
+        """Mueve una falla arriba o abajo en el orden"""
+        current = db.execute_single("SELECT id, orden FROM fallas_catalogo WHERE id = ?", (falla_id,))
+        if not current:
+            return False
+
+        if direction == 'up':
+            neighbor = db.execute_single(
+                "SELECT id, orden FROM fallas_catalogo WHERE orden < ? ORDER BY orden DESC LIMIT 1",
+                (current['orden'],)
+            )
+        else:
+            neighbor = db.execute_single(
+                "SELECT id, orden FROM fallas_catalogo WHERE orden > ? ORDER BY orden ASC LIMIT 1",
+                (current['orden'],)
+            )
+
+        if not neighbor:
+            return False
+
+        db.execute_update("UPDATE fallas_catalogo SET orden = ? WHERE id = ?", (neighbor['orden'], current['id']))
+        db.execute_update("UPDATE fallas_catalogo SET orden = ? WHERE id = ?", (current['orden'], neighbor['id']))
         return True
 
 class IngresoFalla:

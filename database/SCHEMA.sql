@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS fallas_catalogo (
     nombre TEXT UNIQUE NOT NULL,
     descripcion TEXT,
     precio_sugerido REAL DEFAULT 0,
+    orden INTEGER DEFAULT 0,
     fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

@@ -2921,25 +2921,33 @@ async function loadAdminFallas() {
                 <table class="table table-sm table-hover mb-0">
                     <thead class="table-light">
                         <tr>
+                            <th width="60">#</th>
                             <th>Nombre</th>
                             <th>Descripción</th>
                             <th>Precio</th>
-                            <th width="150">Acciones</th>
+                            <th width="230">Acciones</th>
                         </tr>
                     </thead>
                     <tbody>
-                        ${Array.isArray(fallas) ? fallas.map(f => `
+                        ${Array.isArray(fallas) ? fallas.map((f, index) => `
                             <tr>
+                                <td><small class="text-muted">${index + 1}</small></td>
                                 <td>${f.nombre}</td>
                                 <td>${f.descripcion || 'N/A'}</td>
                                 <td>$${f.precio_sugerido || 0}</td>
                                 <td>
+                                    <button class="btn btn-sm btn-outline-secondary me-1" onclick="moveFalla(${f.id}, 'up')" title="Subir falla">
+                                        <i class="fas fa-arrow-up"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-secondary me-1" onclick="moveFalla(${f.id}, 'down')" title="Bajar falla">
+                                        <i class="fas fa-arrow-down"></i>
+                                    </button>
                                     <button class="btn btn-sm btn-danger" onclick="deleteFalla(${f.id}, '${f.nombre}')">
                                         <i class="fas fa-trash"></i> Eliminar
                                     </button>
                                 </td>
                             </tr>
-                        `).join('') : '<tr><td colspan="4" class="text-center">No hay fallas</td></tr>'}
+                        `).join('') : '<tr><td colspan="5" class="text-center">No hay fallas</td></tr>'}
                     </tbody>
                 </table>
             </div>
@@ -4735,6 +4743,25 @@ async function submitNewFalla(event) {
     } catch (error) {
         console.error('Error al agregar falla:', error);
         showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
+    }
+}
+
+async function moveFalla(id, direction) {
+    try {
+        const response = await apiCall(`/fallas/${id}/orden`, {
+            method: 'PUT',
+            body: JSON.stringify({ direction })
+        });
+
+        if (response && response.success) {
+            showAlert('Orden de falla actualizado', 'success');
+            adminActiveTab = 'fallas';
+            loadPage('admin');
+        } else {
+            showAlert(response?.error || 'No se pudo reorganizar la falla', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error al reorganizar falla: ' + error.message, 'danger');
     }
 }
 

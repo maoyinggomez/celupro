@@ -1,5 +1,6 @@
 from .database import db
 from datetime import datetime
+import sqlite3
 
 class Ingreso:
     """Modelo de ingresos técnicos"""
@@ -7,20 +8,18 @@ class Ingreso:
     @staticmethod
     def generate_numero_ingreso():
         """Genera un número de ingreso secuencial (1, 2, 3, ...)"""
-        # Contar total de ingresos existentes
-        query = "SELECT COUNT(*) as count FROM ingresos"
+        # Usar el máximo actual para evitar colisiones si hubo eliminaciones
+        query = "SELECT COALESCE(MAX(CAST(numero_ingreso AS INTEGER)), 0) as max_num FROM ingresos"
         result = db.execute_single(query)
-        count = result['count'] + 1 if result else 1
+        max_num = result['max_num'] if result and result['max_num'] is not None else 0
+        next_num = max_num + 1
         
         # Retornar solo el número secuencial
-        return str(count)
+        return str(next_num)
     
     @staticmethod
     def create(datos):
         """Crea un nuevo ingreso técnico"""
-        # Generar número de ingreso único
-        numero_ingreso = Ingreso.generate_numero_ingreso()
-        
         # Convertir campos de texto a mayúsculas
         cliente_nombre = datos['cliente_nombre'].upper()
         cliente_apellido = datos['cliente_apellido'].upper()
@@ -49,44 +48,53 @@ class Ingreso:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         
-        params = (
-            numero_ingreso,
-            datos['empleado_id'],
-            datos.get('tecnico_id'),
-            (datos.get('tecnico_nombre') or '').upper(),
-            (datos.get('tecnico_telefono') or '').upper(),
-            (datos.get('tecnico_cedula') or '').upper(),
-            datos['marca_id'],
-            datos['modelo_id'],
-            cliente_nombre,
-            cliente_apellido,
-            cliente_cedula,
-            cliente_telefono,
-            cliente_direccion,
-            color,
-            imei,
-            falla_general,
-            notas_adicionales,
-            datos.get('estado_display', False),
-            datos.get('estado_tactil', False),
-            datos.get('estado_botones', False),
-            datos.get('estado_apagado', False),
-            datos.get('tiene_clave', False),
-            tipo_clave,
-            datos.get('clave', ''),
-            datos.get('garantia', False),
-            datos.get('estuche', False),
-            datos.get('bandeja_sim', False),
-            color_bandeja_sim,
-            datos.get('visor_partido', False),
-            estado_botones_detalle,
-            valor_total,
-            fecha_ingreso
-        )
-        
-        ingreso_id = db.execute_update(query, params)
-        
-        return {'id': ingreso_id, 'numero_ingreso': numero_ingreso}
+        # Reintento simple por si hay concurrencia y se repite el número generado
+        for _ in range(5):
+            numero_ingreso = Ingreso.generate_numero_ingreso()
+            params = (
+                numero_ingreso,
+                datos['empleado_id'],
+                datos.get('tecnico_id'),
+                (datos.get('tecnico_nombre') or '').upper(),
+                (datos.get('tecnico_telefono') or '').upper(),
+                (datos.get('tecnico_cedula') or '').upper(),
+                datos['marca_id'],
+                datos['modelo_id'],
+                cliente_nombre,
+                cliente_apellido,
+                cliente_cedula,
+                cliente_telefono,
+                cliente_direccion,
+                color,
+                imei,
+                falla_general,
+                notas_adicionales,
+                datos.get('estado_display', False),
+                datos.get('estado_tactil', False),
+                datos.get('estado_botones', False),
+                datos.get('estado_apagado', False),
+                datos.get('tiene_clave', False),
+                tipo_clave,
+                datos.get('clave', ''),
+                datos.get('garantia', False),
+                datos.get('estuche', False),
+                datos.get('bandeja_sim', False),
+                color_bandeja_sim,
+                datos.get('visor_partido', False),
+                estado_botones_detalle,
+                valor_total,
+                fecha_ingreso
+            )
+
+            try:
+                ingreso_id = db.execute_update(query, params)
+                return {'id': ingreso_id, 'numero_ingreso': numero_ingreso}
+            except sqlite3.IntegrityError as e:
+                if 'ingresos.numero_ingreso' in str(e):
+                    continue
+                raise
+
+        raise Exception('No se pudo generar un número de ingreso único, intenta nuevamente')
 
     @staticmethod
     def find_active_duplicate(cliente_cedula):

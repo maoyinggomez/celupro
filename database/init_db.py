@@ -56,6 +56,7 @@ def init_db():
         nombre TEXT UNIQUE NOT NULL,
         descripcion TEXT,
         precio_sugerido REAL DEFAULT 0,
+        orden INTEGER DEFAULT 0,
         fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     ''')
@@ -315,6 +316,9 @@ def ensure_schema_updates(cursor, conn):
     cursor.execute("PRAGMA table_info(modelos)")
     columnas_modelos = {row[1] for row in cursor.fetchall()}
 
+    cursor.execute("PRAGMA table_info(fallas_catalogo)")
+    columnas_fallas = {row[1] for row in cursor.fetchall()}
+
     if 'telefono' not in columnas_usuarios:
         cursor.execute("ALTER TABLE usuarios ADD COLUMN telefono TEXT")
 
@@ -363,8 +367,12 @@ def ensure_schema_updates(cursor, conn):
     if 'orden' not in columnas_modelos:
         cursor.execute("ALTER TABLE modelos ADD COLUMN orden INTEGER DEFAULT 0")
 
+    if 'orden' not in columnas_fallas:
+        cursor.execute("ALTER TABLE fallas_catalogo ADD COLUMN orden INTEGER DEFAULT 0")
+
     cursor.execute("UPDATE marcas SET orden = id WHERE orden IS NULL OR orden = 0")
     cursor.execute("UPDATE modelos SET orden = id WHERE orden IS NULL OR orden = 0")
+    cursor.execute("UPDATE fallas_catalogo SET orden = id WHERE orden IS NULL OR orden = 0")
 
     conn.commit()
 
