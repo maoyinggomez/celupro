@@ -352,6 +352,7 @@ async function loadPage(page) {
                     const bandejaSimSelect = document.getElementById('bandeja_sim_select');
                     if (bandejaSimSelect) {
                         bandejaSimSelect.addEventListener('change', toggleBandejaSimColor);
+                        toggleBandejaSimColor();
                     }
 
                     const imeiInput = document.getElementById('imei');
@@ -987,7 +988,20 @@ async function loadIngresoForm() {
                         </div>
                         <div class="col-12 col-md-6 col-lg-4 mb-3" id="colorBandejaDiv" style="display: none;">
                             <label class="form-label">Color de Bandeja SIM</label>
-                            <input type="text" class="form-control form-control-lg" id="color_bandeja_sim" placeholder="Ej: Negro, Plateado">
+                            <select class="form-control form-control-lg" id="color_bandeja_sim">
+                                <option value="" selected>Seleccione color</option>
+                                <option value="NEGRO">NEGRO</option>
+                                <option value="BLANCO">BLANCO</option>
+                                <option value="PLATEADO">PLATEADO</option>
+                                <option value="DORADO">DORADO</option>
+                                <option value="ROJO">ROJO</option>
+                                <option value="AZUL">AZUL</option>
+                                <option value="VERDE">VERDE</option>
+                                <option value="MORADO">MORADO</option>
+                                <option value="ROSADO">ROSADO</option>
+                                <option value="NARANJA">NARANJA</option>
+                                <option value="GRIS">GRIS</option>
+                            </select>
                         </div>
                         <div class="col-12 col-md-6 col-lg-4 mb-3">
                             <label class="form-label">Visor o glass partido</label>
@@ -1264,7 +1278,9 @@ async function submitIngreso(e) {
         garantia: document.getElementById('garantia_select').value === 'SI',
         estuche: document.getElementById('estuche_select').value === 'SI',
         bandeja_sim: document.getElementById('bandeja_sim_select').value === 'SI',
-        color_bandeja_sim: (document.getElementById('color_bandeja_sim').value || '').toUpperCase(),
+        color_bandeja_sim: document.getElementById('bandeja_sim_select').value === 'SI'
+            ? ((document.getElementById('color_bandeja_sim').value || '').toUpperCase())
+            : '',
         visor_partido: document.getElementById('visor_partido_select').value === 'SI',
         estado_botones_detalle: document.getElementById('estado_botones_detalle').value,
         valor_reparacion: parseMonetaryValue(document.getElementById('valor_reparacion').value),
@@ -1317,6 +1333,14 @@ async function submitIngreso(e) {
         return;
     }
 
+    if (datos.bandeja_sim && !datos.color_bandeja_sim) {
+        currentWizardStep = 3;
+        updateWizardDisplay();
+        showWizardStepAlert(3, 'Seleccione el color de la bandeja SIM', 'danger');
+        isSubmittingIngreso = false;
+        return;
+    }
+
     if (!datos.falla_general) {
         currentWizardStep = 5;
         updateWizardDisplay();
@@ -1360,6 +1384,7 @@ async function submitIngreso(e) {
             const numeroIngreso = response.numero_ingreso || response.id;
             showWizardStepAlert(5, `¡Ingreso creado exitosamente! Número: ${numeroIngreso}`, 'success');
             document.getElementById('ingresoForm').reset();
+            toggleBandejaSimColor();
 
             if (response.id) {
                 await printTicket(response.id);
@@ -5317,8 +5342,15 @@ function toggleClave() {
 function toggleBandejaSimColor() {
     const bandejaSelect = document.getElementById('bandeja_sim_select');
     const colorDiv = document.getElementById('colorBandejaDiv');
+    const colorSelect = document.getElementById('color_bandeja_sim');
     if (!bandejaSelect || !colorDiv) return;
-    colorDiv.style.display = bandejaSelect.value === 'SI' ? 'block' : 'none';
+
+    const mostrarColor = bandejaSelect.value === 'SI';
+    colorDiv.style.display = mostrarColor ? 'block' : 'none';
+
+    if (!mostrarColor && colorSelect) {
+        colorSelect.value = '';
+    }
 }
 
 function syncValorReparacionFromFallas() {

@@ -4,6 +4,36 @@ import sqlite3
 
 class Ingreso:
     """Modelo de ingresos técnicos"""
+
+    ALLOWED_BANDEJA_SIM_COLORS = {
+        'NEGRO',
+        'BLANCO',
+        'PLATEADO',
+        'DORADO',
+        'ROJO',
+        'AZUL',
+        'VERDE',
+        'MORADO',
+        'ROSADO',
+        'NARANJA',
+        'GRIS'
+    }
+
+    @staticmethod
+    def normalize_bandeja_sim_color(color_bandeja_sim, bandeja_sim):
+        """Normaliza color de bandeja SIM y retorna vacío si no aplica."""
+        if not bandeja_sim:
+            return ''
+
+        color_normalizado = str(color_bandeja_sim or '').strip().upper()
+        if color_normalizado in {'PÚRPURA', 'PURPURA'}:
+            color_normalizado = 'MORADO'
+        if color_normalizado == 'ROSA':
+            color_normalizado = 'ROSADO'
+
+        if color_normalizado not in Ingreso.ALLOWED_BANDEJA_SIM_COLORS:
+            return ''
+        return color_normalizado
     
     @staticmethod
     def generate_numero_ingreso():
@@ -31,7 +61,11 @@ class Ingreso:
         falla_general = datos.get('falla_general', '').upper()
         notas_adicionales = datos.get('notas_adicionales', '').upper()
         tipo_clave = (datos.get('tipo_clave', '') or '').upper()
-        color_bandeja_sim = (datos.get('color_bandeja_sim', '') or '').upper()
+        bandeja_sim = bool(datos.get('bandeja_sim', False))
+        color_bandeja_sim = Ingreso.normalize_bandeja_sim_color(
+            datos.get('color_bandeja_sim', ''),
+            bandeja_sim
+        )
         estado_botones_detalle = (datos.get('estado_botones_detalle', '') or '').upper()
         valor_total = datos.get('valor_reparacion', 0)
         fecha_ingreso = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -78,7 +112,7 @@ class Ingreso:
                 datos.get('clave', ''),
                 datos.get('garantia', False),
                 datos.get('estuche', False),
-                datos.get('bandeja_sim', False),
+                bandeja_sim,
                 color_bandeja_sim,
                 datos.get('visor_partido', False),
                 estado_botones_detalle,
