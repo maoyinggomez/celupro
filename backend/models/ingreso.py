@@ -78,8 +78,8 @@ class Ingreso:
             estado_display, estado_tactil, estado_botones, estado_apagado,
             tiene_clave, tipo_clave, clave,
             garantia, estuche, bandeja_sim, color_bandeja_sim, visor_partido, estado_botones_detalle,
-            valor_total, fecha_ingreso
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            valor_total, equipo_no_lista, fecha_ingreso
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         
         # Reintento simple por si hay concurrencia y se repite el número generado
@@ -117,6 +117,7 @@ class Ingreso:
                 datos.get('visor_partido', False),
                 estado_botones_detalle,
                 valor_total,
+                bool(datos.get('equipo_no_lista', False)),
                 fecha_ingreso
             )
 
@@ -309,9 +310,9 @@ class Ingreso:
         params = []
         
         for key, value in datos.items():
-            if key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'imei', 'falla_general', 'valor_total', 'estado_pago', 'tipo_clave', 'garantia', 'estuche', 'bandeja_sim', 'color_bandeja_sim', 'visor_partido', 'estado_botones_detalle', 'estado_apagado', 'tiene_clave', 'clave']:
+            if key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'imei', 'falla_general', 'valor_total', 'estado_pago', 'tipo_clave', 'garantia', 'estuche', 'bandeja_sim', 'color_bandeja_sim', 'visor_partido', 'estado_botones_detalle', 'estado_apagado', 'tiene_clave', 'clave', 'marca_id', 'modelo_id', 'equipo_no_lista']:
                 # Convertir a mayúsculas si es string (excepto valor_total)
-                if isinstance(value, str) and key not in ['valor_total', 'estado_pago', 'imei', 'clave']:
+                if isinstance(value, str) and key not in ['valor_total', 'estado_pago', 'imei', 'clave', 'marca_id', 'modelo_id', 'equipo_no_lista']:
                     value = value.upper()
                 updates.append(f"{key} = ?")
                 params.append(value)

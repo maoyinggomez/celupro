@@ -78,6 +78,7 @@ def init_db():
         cliente_direccion TEXT,
         marca_id INTEGER NOT NULL,
         modelo_id INTEGER NOT NULL,
+        equipo_no_lista BOOLEAN DEFAULT 0,
         color TEXT,
         imei TEXT,
         falla_general TEXT,
@@ -260,6 +261,7 @@ def insert_default_data(cursor, conn):
     
     # Fallas por defecto del catálogo
     fallas_por_defecto = [
+        ('Revisión general', 'Diagnóstico general del equipo', 10000),
         ('Pantalla general', 'Problemas generales con la pantalla', 45000),
         ('Pantalla táctil no funciona', 'Pantalla táctil no responde', 50000),
         ('Pantalla original dañada', 'Pantalla original con daño físico', 55000),
@@ -328,6 +330,9 @@ def ensure_schema_updates(cursor, conn):
     if 'estado_pago' not in columnas_ingresos:
         cursor.execute("ALTER TABLE ingresos ADD COLUMN estado_pago TEXT DEFAULT 'pendiente'")
 
+    if 'equipo_no_lista' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN equipo_no_lista BOOLEAN DEFAULT 0")
+
     if 'imei' not in columnas_ingresos:
         cursor.execute("ALTER TABLE ingresos ADD COLUMN imei TEXT")
 
@@ -369,6 +374,19 @@ def ensure_schema_updates(cursor, conn):
 
     if 'orden' not in columnas_fallas:
         cursor.execute("ALTER TABLE fallas_catalogo ADD COLUMN orden INTEGER DEFAULT 0")
+
+    # Asegurar falla base de diagnóstico para bases existentes
+    falla_revision = cursor.execute(
+        "SELECT id FROM fallas_catalogo WHERE UPPER(TRIM(nombre)) = UPPER(TRIM(?))",
+        ('Revisión general',)
+    ).fetchone()
+    if not falla_revision:
+        cursor.execute("SELECT COALESCE(MAX(orden), 0) + 1 FROM fallas_catalogo")
+        siguiente_orden_falla = cursor.fetchone()[0]
+        cursor.execute(
+            "INSERT INTO fallas_catalogo (nombre, descripcion, precio_sugerido, orden) VALUES (?, ?, ?, ?)",
+            ('Revisión general', 'Diagnóstico general del equipo', 10000, siguiente_orden_falla)
+        )
 
     cursor.execute("UPDATE marcas SET orden = id WHERE orden IS NULL OR orden = 0")
     cursor.execute("UPDATE modelos SET orden = id WHERE orden IS NULL OR orden = 0")

@@ -3,6 +3,7 @@ from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from datetime import timedelta
 from functools import wraps
+import re
 import os
 import sys
 from pathlib import Path
@@ -58,6 +59,23 @@ def role_required(*roles):
             return fn(*args, **kwargs)
         return wrapper
     return decorator
+
+
+def _is_garantia_content(text):
+    return bool(re.search(r'\[GARANTIA\]|GARANT[ÍI]A', str(text or ''), re.IGNORECASE))
+
+
+def _get_ingreso_id_by_ingreso_falla(ingreso_falla_id):
+    from models.database import db as database
+    row = database.execute_single("SELECT ingreso_id FROM ingreso_fallas WHERE id = ?", (ingreso_falla_id,))
+    return int(row['ingreso_id']) if row else None
+
+
+def _is_ingreso_entregado(ingreso_id):
+    ingreso = Ingreso.get_by_id(ingreso_id)
+    if not ingreso:
+        return None
+    return str(ingreso.get('estado_ingreso') or '').lower() == 'entregado'
 
 # ===== RUTAS DE AUTENTICACIÓN =====
 @app.route('/api/auth/login', methods=['POST'])
@@ -303,26 +321,121 @@ def reorder_falla(falla_id):
 @role_required('admin', 'empleado', 'tecnico')
 def create_ingreso():
     """Crea un nuevo ingreso técnico"""
-    data = request.get_json()
+    data = request.get_json() or {}
     current_user_id = int(get_jwt_identity())
-    
-    # Validaciones básicas
-    required_fields = ['marca_id', 'modelo_id', 'tecnico_id', 'cliente_nombre', 'cliente_apellido', 'cliente_cedula']
-    if not all(data.get(field) for field in required_fields):
-        return jsonify({'error': 'Campos requeridos incompletos'}), 400
+    equipo_no_lista_raw = data.get('equipo_no_lista', False)
+    if isinstance(equipo_no_lista_raw, str):
+        equipo_no_lista = equipo_no_lista_raw.strip().lower() in ('1', 'true', 'si', 'sí', 'yes', 'on')
+    else:
+        equipo_no_lista = bool(equipo_no_lista_raw)
+
+    # Compatibilidad defensiva: si marca/modelo vienen ambos vacíos, tratar como no_lista
+    marca_vacia = data.get('marca_id') in (None, '', 'null')
+    modelo_vacio = data.get('modelo_id') in (None, '', 'null')
+    if not equipo_no_lista and marca_vacia and modelo_vacio:
+        equipo_no_lista = True
+
+    def _is_text_only(value):
+        return bool(value) and all(ch.isalpha() or ch.isspace() for ch in value)
+
+    # Validaciones explícitas para evitar falsos positivos
+    cliente_nombre = str(data.get('cliente_nombre') or '').strip()
+    cliente_apellido = str(data.get('cliente_apellido') or '').strip()
+    cliente_cedula = str(data.get('cliente_cedula') or '').strip()
+    cliente_telefono = str(data.get('cliente_telefono') or '').strip()
+
+    missing_fields = []
+    if not cliente_nombre:
+        missing_fields.append('cliente_nombre')
+    if not cliente_apellido:
+        missing_fields.append('cliente_apellido')
+    if not cliente_cedula:
+        missing_fields.append('cliente_cedula')
+
+    try:
+        tecnico_id = int(data.get('tecnico_id'))
+    except (TypeError, ValueError):
+        tecnico_id = None
+        missing_fields.append('tecnico_id')
+
+    if not equipo_no_lista:
+        try:
+            int(data.get('marca_id'))
+        except (TypeError, ValueError):
+            missing_fields.append('marca_id')
+
+        try:
+            int(data.get('modelo_id'))
+        except (TypeError, ValueError):
+            missing_fields.append('modelo_id')
+
+    if missing_fields:
+        return jsonify({
+            'error': f'Campos requeridos incompletos (ingresos): {", ".join(sorted(set(missing_fields)))}',
+            'missing_fields': sorted(set(missing_fields))
+        }), 400
+
+    if not _is_text_only(cliente_nombre):
+        return jsonify({'error': 'El nombre del cliente solo debe contener texto'}), 400
+
+    if not _is_text_only(cliente_apellido):
+        return jsonify({'error': 'El apellido del cliente solo debe contener texto'}), 400
+
+    if not cliente_cedula.isdigit():
+        return jsonify({'error': 'La cédula del cliente solo debe contener números'}), 400
+
+    if cliente_telefono and not cliente_telefono.isdigit():
+        return jsonify({'error': 'El teléfono del cliente solo debe contener números'}), 400
 
     imei = str(data.get('imei', '') or '').strip()
-    if imei and not imei.isdigit():
-        return jsonify({'error': 'El IMEI solo puede contener números'}), 400
+    if not imei.isdigit() or len(imei) != 15:
+        return jsonify({'error': 'El IMEI debe contener exactamente 15 números'}), 400
+
+    data['cliente_nombre'] = cliente_nombre
+    data['cliente_apellido'] = cliente_apellido
+    data['cliente_cedula'] = cliente_cedula
+    data['cliente_telefono'] = cliente_telefono
+    data['imei'] = imei
+
+    tiene_clave_raw = data.get('tiene_clave', False)
+    if isinstance(tiene_clave_raw, str):
+        tiene_clave = tiene_clave_raw.strip().lower() in ('1', 'true', 'si', 'sí', 'yes', 'on')
+    else:
+        tiene_clave = bool(tiene_clave_raw)
+
+    tipo_clave = str(data.get('tipo_clave', '') or '').strip().upper()
+    clave = str(data.get('clave', '') or '').strip()
+    if tiene_clave and tipo_clave == 'NUMERICA' and clave and not clave.isdigit():
+        return jsonify({'error': 'La clave NUMÉRICA solo permite números'}), 400
 
     # Nota: la cédula de cliente existente no debe bloquear la creación de nuevos ingresos.
     # El frontend puede advertir que el cliente ya existe, pero el backend permite registrar
     # múltiples ingresos para el mismo cliente.
     
     try:
+        if equipo_no_lista:
+            no_lista_defaults = Modelo.get_or_create_no_lista_defaults()
+            data['marca_id'] = no_lista_defaults['marca_id']
+            data['modelo_id'] = no_lista_defaults['modelo_id']
+            data['equipo_no_lista'] = True
+        else:
+            try:
+                data['marca_id'] = int(data.get('marca_id'))
+                data['modelo_id'] = int(data.get('modelo_id'))
+            except (TypeError, ValueError):
+                return jsonify({'error': 'Marca o modelo inválidos'}), 400
+
+            marca = Marca.get_by_id(data['marca_id'])
+            modelo = Modelo.get_by_id(data['modelo_id'])
+            if not marca or not modelo:
+                return jsonify({'error': 'Marca o modelo no encontrados'}), 400
+            if not Modelo.belongs_to_marca(data['modelo_id'], data['marca_id']):
+                return jsonify({'error': 'El modelo no pertenece a la marca seleccionada'}), 400
+            data['equipo_no_lista'] = False
+
         # Agregar empleado_id automáticamente
         data['empleado_id'] = current_user_id
-        tecnico = User.get_by_id(int(data.get('tecnico_id')))
+        tecnico = User.get_by_id(tecnico_id)
         if not tecnico or tecnico.get('rol') != 'tecnico':
             return jsonify({'error': 'Técnico inválido'}), 400
 
@@ -385,9 +498,21 @@ def delete_ingreso(ingreso_id):
 @role_required('admin', 'tecnico')
 def update_ingreso(ingreso_id):
     """Actualiza un ingreso"""
-    data = request.get_json()
+    data = request.get_json() or {}
+    current_user_id = int(get_jwt_identity())
+    current_user = User.get_by_id(current_user_id)
     
     try:
+        def _is_text_only(value):
+            return bool(value) and all(ch.isalpha() or ch.isspace() for ch in value)
+
+        ingreso_actual = Ingreso.get_by_id(ingreso_id)
+        if not ingreso_actual:
+            return jsonify({'error': 'Ingreso no encontrado'}), 404
+
+        if str(ingreso_actual.get('estado_ingreso') or '').lower() == 'entregado':
+            return jsonify({'error': 'Ingreso entregado bloqueado para edición. Usa Ingresar por Garantía.'}), 409
+
         # Si se está actualizando el estado, usar el método específico
         if 'estado_ingreso' in data:
             Ingreso.update_estado(ingreso_id, data['estado_ingreso'])
@@ -397,6 +522,86 @@ def update_ingreso(ingreso_id):
         for key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'imei', 'falla_general', 'valor_total', 'estado_pago', 'estado_apagado', 'tiene_clave', 'tipo_clave', 'clave', 'garantia', 'estuche', 'bandeja_sim', 'color_bandeja_sim', 'visor_partido', 'estado_botones_detalle']:
             if key in data:
                 updates[key] = data[key]
+
+        tiene_clave_raw = updates.get('tiene_clave', ingreso_actual.get('tiene_clave', False))
+        if isinstance(tiene_clave_raw, str):
+            tiene_clave = tiene_clave_raw.strip().lower() in ('1', 'true', 'si', 'sí', 'yes', 'on')
+        else:
+            tiene_clave = bool(tiene_clave_raw)
+
+        tipo_clave = str(updates.get('tipo_clave', ingreso_actual.get('tipo_clave', '')) or '').strip().upper()
+        clave = str(updates.get('clave', ingreso_actual.get('clave', '')) or '').strip()
+        if tiene_clave and tipo_clave == 'NUMERICA' and clave and not clave.isdigit():
+            return jsonify({'error': 'La clave NUMÉRICA solo permite números'}), 400
+
+        if 'cliente_nombre' in updates:
+            nombre = str(updates.get('cliente_nombre') or '').strip()
+            if not _is_text_only(nombre):
+                return jsonify({'error': 'El nombre del cliente solo debe contener texto'}), 400
+            updates['cliente_nombre'] = nombre
+
+        if 'cliente_apellido' in updates:
+            apellido = str(updates.get('cliente_apellido') or '').strip()
+            if not _is_text_only(apellido):
+                return jsonify({'error': 'El apellido del cliente solo debe contener texto'}), 400
+            updates['cliente_apellido'] = apellido
+
+        if 'cliente_cedula' in updates:
+            cedula = str(updates.get('cliente_cedula') or '').strip()
+            if not cedula.isdigit():
+                return jsonify({'error': 'La cédula del cliente solo debe contener números'}), 400
+            updates['cliente_cedula'] = cedula
+
+        if 'cliente_telefono' in updates:
+            telefono = str(updates.get('cliente_telefono') or '').strip()
+            if telefono and not telefono.isdigit():
+                return jsonify({'error': 'El teléfono del cliente solo debe contener números'}), 400
+            updates['cliente_telefono'] = telefono
+
+        if 'imei' in updates:
+            imei_update = str(updates.get('imei') or '').strip()
+            if imei_update and (not imei_update.isdigit() or len(imei_update) != 15):
+                return jsonify({'error': 'El IMEI debe contener exactamente 15 números'}), 400
+            updates['imei'] = imei_update
+
+        is_admin = current_user and current_user.get('rol') == 'admin'
+        catalog_fields = {'marca_id', 'modelo_id', 'equipo_no_lista'}
+        requested_catalog_update = any(field in data for field in catalog_fields)
+
+        if requested_catalog_update and not is_admin:
+            return jsonify({'error': 'Solo admin puede actualizar marca/modelo del ingreso'}), 403
+
+        if requested_catalog_update:
+
+            marca_id = data.get('marca_id', ingreso_actual.get('marca_id'))
+            modelo_id = data.get('modelo_id', ingreso_actual.get('modelo_id'))
+
+            if marca_id is not None:
+                try:
+                    marca_id = int(marca_id)
+                except (TypeError, ValueError):
+                    return jsonify({'error': 'marca_id inválido'}), 400
+
+            if modelo_id is not None:
+                try:
+                    modelo_id = int(modelo_id)
+                except (TypeError, ValueError):
+                    return jsonify({'error': 'modelo_id inválido'}), 400
+
+            if not marca_id or not modelo_id:
+                return jsonify({'error': 'Marca y modelo son requeridos para catalogar'}), 400
+
+            marca = Marca.get_by_id(marca_id)
+            modelo = Modelo.get_by_id(modelo_id)
+            if not marca or not modelo:
+                return jsonify({'error': 'Marca o modelo no encontrados'}), 400
+            if not Modelo.belongs_to_marca(modelo_id, marca_id):
+                return jsonify({'error': 'El modelo no pertenece a la marca seleccionada'}), 400
+
+            updates['marca_id'] = marca_id
+            updates['modelo_id'] = modelo_id
+            updates['equipo_no_lista'] = bool(data.get('equipo_no_lista', False))
+
         if updates:
             Ingreso.update(ingreso_id, updates)
         
@@ -474,6 +679,13 @@ def update_ingreso_estado(ingreso_id):
         return jsonify({'error': 'estado requerido'}), 400
     
     try:
+        ingreso = Ingreso.get_by_id(ingreso_id)
+        if not ingreso:
+            return jsonify({'error': 'Ingreso no encontrado'}), 404
+
+        if str(ingreso.get('estado_ingreso') or '').lower() == 'entregado':
+            return jsonify({'error': 'Ingreso entregado bloqueado para edición. Usa Ingresar por Garantía.'}), 409
+
         Ingreso.update_estado(ingreso_id, data['estado'])
         return jsonify({'success': True}), 200
     except Exception as e:
@@ -491,6 +703,9 @@ def add_falla_to_ingreso(ingreso_id):
         return jsonify({'error': 'falla_id requerido'}), 400
     
     try:
+        if _is_ingreso_entregado(ingreso_id):
+            return jsonify({'error': 'No se pueden modificar fallas en ingresos entregados. Usa Ingresar por Garantía.'}), 409
+
         falla_ingreso_id = IngresoFalla.add_to_ingreso(
             ingreso_id,
             data['falla_id'],
@@ -511,6 +726,13 @@ def update_falla_valor(ingreso_falla_id):
         return jsonify({'error': 'valor_reparacion requerido'}), 400
     
     try:
+        ingreso_id = _get_ingreso_id_by_ingreso_falla(ingreso_falla_id)
+        if not ingreso_id:
+            return jsonify({'error': 'Falla de ingreso no encontrada'}), 404
+
+        if _is_ingreso_entregado(ingreso_id):
+            return jsonify({'error': 'No se puede actualizar valor en ingresos entregados. Usa Ingresar por Garantía.'}), 409
+
         IngresoFalla.update_valor(ingreso_falla_id, data['valor_reparacion'])
         return jsonify({'success': True}), 200
     except Exception as e:
@@ -526,6 +748,13 @@ def update_falla_estado(ingreso_falla_id):
         return jsonify({'error': 'estado_falla requerido'}), 400
     
     try:
+        ingreso_id = _get_ingreso_id_by_ingreso_falla(ingreso_falla_id)
+        if not ingreso_id:
+            return jsonify({'error': 'Falla de ingreso no encontrada'}), 404
+
+        if _is_ingreso_entregado(ingreso_id):
+            return jsonify({'error': 'No se puede actualizar estado de fallas en ingresos entregados. Usa Ingresar por Garantía.'}), 409
+
         IngresoFalla.update_estado(ingreso_falla_id, data['estado_falla'])
         return jsonify({'success': True}), 200
     except Exception as e:
@@ -538,6 +767,13 @@ def update_falla_notas(ingreso_falla_id):
     data = request.get_json()
     
     try:
+        ingreso_id = _get_ingreso_id_by_ingreso_falla(ingreso_falla_id)
+        if not ingreso_id:
+            return jsonify({'error': 'Falla de ingreso no encontrada'}), 404
+
+        if _is_ingreso_entregado(ingreso_id):
+            return jsonify({'error': 'No se pueden agregar notas a fallas en ingresos entregados. Usa Ingresar por Garantía.'}), 409
+
         IngresoFalla.add_nota(ingreso_falla_id, data.get('notas_falla', ''))
         return jsonify({'success': True}), 200
     except Exception as e:
@@ -548,6 +784,13 @@ def update_falla_notas(ingreso_falla_id):
 def delete_ingreso_falla(ingreso_falla_id):
     """Elimina una falla de un ingreso"""
     try:
+        ingreso_id = _get_ingreso_id_by_ingreso_falla(ingreso_falla_id)
+        if not ingreso_id:
+            return jsonify({'error': 'Falla de ingreso no encontrada'}), 404
+
+        if _is_ingreso_entregado(ingreso_id):
+            return jsonify({'error': 'No se pueden eliminar fallas en ingresos entregados. Usa Ingresar por Garantía.'}), 409
+
         IngresoFalla.delete_from_ingreso(ingreso_falla_id)
         return jsonify({'success': True}), 200
     except Exception as e:
@@ -565,6 +808,13 @@ def add_nota(ingreso_id):
         return jsonify({'error': 'contenido requerido'}), 400
     
     try:
+        ingreso = Ingreso.get_by_id(ingreso_id)
+        if not ingreso:
+            return jsonify({'error': 'Ingreso no encontrado'}), 404
+
+        if str(ingreso.get('estado_ingreso') or '').lower() == 'entregado' and not _is_garantia_content(data.get('contenido')):
+            return jsonify({'error': 'Ingreso entregado bloqueado para notas generales. Solo se permite garantía.'}), 409
+
         nota_id = Nota.create(
             ingreso_id,
             current_user_id,
@@ -572,6 +822,33 @@ def add_nota(ingreso_id):
             data.get('tipo', 'general')
         )
         return jsonify({'id': nota_id}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/ingresos/<int:ingreso_id>/garantia', methods=['POST'])
+@role_required('admin', 'tecnico')
+def ingresar_garantia(ingreso_id):
+    """Reingresa un equipo entregado por garantía y reabre el caso."""
+    data = request.get_json() or {}
+    current_user_id = int(get_jwt_identity())
+    comentario = str(data.get('comentario') or '').strip()
+
+    if not comentario:
+        return jsonify({'error': 'comentario requerido'}), 400
+
+    ingreso = Ingreso.get_by_id(ingreso_id)
+    if not ingreso:
+        return jsonify({'error': 'Ingreso no encontrado'}), 404
+
+    if str(ingreso.get('estado_ingreso') or '').lower() != 'entregado':
+        return jsonify({'error': 'Solo ingresos entregados pueden ingresar por garantía'}), 409
+
+    try:
+        Nota.create(ingreso_id, current_user_id, f"[GARANTIA][ABIERTA]: {comentario}", 'tecnica')
+        Ingreso.update_estado(ingreso_id, 'en_reparacion')
+        Ingreso.update(ingreso_id, {'garantia': True})
+        return jsonify({'success': True, 'message': 'Ingreso reabierto por garantía'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
@@ -850,19 +1127,26 @@ def buscar_clientes():
         
         query = '''
         SELECT
-            cliente_cedula,
-            MIN(cliente_nombre) as cliente_nombre,
-            MIN(cliente_apellido) as cliente_apellido,
-            MIN(cliente_telefono) as cliente_telefono,
-            MIN(cliente_direccion) as cliente_direccion
-        FROM ingresos
-        WHERE 
-            UPPER(cliente_nombre) LIKE ? OR
-            UPPER(cliente_apellido) LIKE ? OR
-            UPPER(cliente_cedula) LIKE ? OR
-            UPPER(cliente_telefono) LIKE ?
-        GROUP BY cliente_cedula
-        ORDER BY cliente_nombre, cliente_apellido
+            i.cliente_cedula,
+            i.cliente_nombre,
+            i.cliente_apellido,
+            i.cliente_telefono,
+            i.cliente_direccion
+        FROM ingresos i
+        WHERE
+            (UPPER(i.cliente_nombre) LIKE ? OR
+             UPPER(i.cliente_apellido) LIKE ? OR
+             UPPER(i.cliente_cedula) LIKE ? OR
+             UPPER(i.cliente_telefono) LIKE ?)
+            AND i.id = (
+                SELECT i2.id
+                FROM ingresos i2
+                WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(i2.cliente_cedula)), '.', ''), '-', ''), ' ', '')
+                      = REPLACE(REPLACE(REPLACE(UPPER(TRIM(i.cliente_cedula)), '.', ''), '-', ''), ' ', '')
+                ORDER BY datetime(i2.fecha_ingreso) DESC, i2.id DESC
+                LIMIT 1
+            )
+        ORDER BY i.cliente_nombre, i.cliente_apellido
         LIMIT 10
         '''
         
@@ -887,6 +1171,60 @@ def buscar_clientes():
         error_msg = str(e)
         trace = traceback.format_exc()
         return jsonify({'error': error_msg, 'trace': trace}), 500
+
+
+@app.route('/api/clientes/<cedula>/actualizar', methods=['PUT'])
+@role_required('admin')
+def actualizar_cliente_por_cedula(cedula):
+    """Actualiza datos del cliente en todos sus ingresos por cédula normalizada"""
+    data = request.get_json() or {}
+
+    nombre = str(data.get('cliente_nombre') or '').strip()
+    apellido = str(data.get('cliente_apellido') or '').strip()
+    cedula_nueva = str(data.get('cliente_cedula') or '').strip()
+    telefono = str(data.get('cliente_telefono') or '').strip()
+    direccion = str(data.get('cliente_direccion') or '').strip()
+
+    missing_fields = []
+    if not nombre:
+        missing_fields.append('cliente_nombre')
+    if not apellido:
+        missing_fields.append('cliente_apellido')
+    if not cedula_nueva:
+        missing_fields.append('cliente_cedula')
+    if not telefono:
+        missing_fields.append('cliente_telefono')
+
+    if missing_fields:
+        return jsonify({'error': 'Campos requeridos incompletos', 'missing_fields': missing_fields}), 400
+
+    cedula_original_norm = ''.join(ch for ch in str(cedula or '').upper().strip() if ch.isalnum())
+    if not cedula_original_norm:
+        return jsonify({'error': 'Cédula original inválida'}), 400
+
+    from models.database import db as database
+    ingresos = database.execute_query(
+        '''
+        SELECT id
+        FROM ingresos
+        WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(cliente_cedula)), '.', ''), '-', ''), ' ', '') = ?
+        ''',
+        (cedula_original_norm,)
+    )
+
+    if not ingresos:
+        return jsonify({'error': 'No se encontraron ingresos para esa cédula'}), 404
+
+    for row in ingresos:
+        Ingreso.update(row['id'], {
+            'cliente_nombre': nombre,
+            'cliente_apellido': apellido,
+            'cliente_cedula': cedula_nueva,
+            'cliente_telefono': telefono,
+            'cliente_direccion': direccion
+        })
+
+    return jsonify({'success': True, 'updated': len(ingresos)}), 200
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5001)

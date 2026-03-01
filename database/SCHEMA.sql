@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS ingresos (
     cliente_direccion TEXT,
     marca_id INTEGER NOT NULL,
     modelo_id INTEGER NOT NULL,
+    equipo_no_lista BOOLEAN DEFAULT 0,
     color TEXT,
     imei TEXT,
     falla_general TEXT,

@@ -3,6 +3,8 @@ let currentPage = null;
 let isSubmittingIngreso = false;
 const printingIngresos = new Set();
 let adminActiveTab = 'usuarios';
+let clientesBusquedaActual = [];
+let clienteBusquedaIndiceActivo = -1;
 
 function getCurrentUserSafe() {
     try {
@@ -340,6 +342,7 @@ async function loadPage(page) {
                     // Agregar listener al campo de búsqueda de clientes
                     const buscarClienteInput = document.getElementById('buscar_cliente');
                     if (buscarClienteInput) {
+                        buscarClienteInput.addEventListener('keydown', manejarNavegacionBusquedaClientes);
                         buscarClienteInput.addEventListener('keyup', buscarClientes);
                         buscarClienteInput.addEventListener('input', buscarClientes);
                     }
@@ -349,18 +352,23 @@ async function loadPage(page) {
                         tieneClaveSelect.addEventListener('change', toggleClave);
                     }
 
+                    const tipoClaveSelect = document.getElementById('tipo_clave');
+                    if (tipoClaveSelect) {
+                        tipoClaveSelect.addEventListener('change', applyClaveInputRules);
+                    }
+
+                    const claveInput = document.getElementById('clave');
+                    if (claveInput) {
+                        claveInput.addEventListener('input', handleClaveInputChange);
+                    }
+
                     const bandejaSimSelect = document.getElementById('bandeja_sim_select');
                     if (bandejaSimSelect) {
                         bandejaSimSelect.addEventListener('change', toggleBandejaSimColor);
                         toggleBandejaSimColor();
                     }
 
-                    const imeiInput = document.getElementById('imei');
-                    if (imeiInput) {
-                        imeiInput.addEventListener('input', () => {
-                            imeiInput.value = imeiInput.value.replace(/\D/g, '');
-                        });
-                    }
+                    setupIngresoFieldRestrictions();
 
                     const valorInput = document.getElementById('valor_reparacion');
                     if (valorInput) {
@@ -408,6 +416,7 @@ async function loadPage(page) {
                     document.addEventListener('click', window._fallasOutsideClickHandler);
 
                     toggleClave();
+                    applyClaveInputRules();
                     toggleBandejaSimColor();
                     syncValorReparacionFromFallas();
                     updateFallasSelectedCount();
@@ -425,6 +434,12 @@ async function loadPage(page) {
             const marcaSelect = document.getElementById('marca_id');
             if (marcaSelect) {
                 marcaSelect.addEventListener('change', loadModelosByMarca);
+            }
+
+            const equipoNoListaCheckbox = document.getElementById('equipo_no_lista');
+            if (equipoNoListaCheckbox) {
+                equipoNoListaCheckbox.addEventListener('change', toggleEquipoNoLista);
+                toggleEquipoNoLista();
             }
         } else if (page === 'admin') {
             const adminTabs = document.querySelectorAll('#mainContent .nav-tabs .nav-link[data-bs-toggle="tab"]');
@@ -847,13 +862,13 @@ async function loadIngresoForm() {
                         <div class="col-12 col-md-6">
                             <div class="mb-3">
                                 <label class="form-label">Cédula *</label>
-                                <input type="text" class="form-control form-control-lg" id="cliente_cedula" required>
+                                <input type="text" class="form-control form-control-lg" id="cliente_cedula" inputmode="numeric" pattern="[0-9]*" required>
                             </div>
                         </div>
                         <div class="col-12 col-md-6">
                             <div class="mb-3">
                                 <label class="form-label">Teléfono</label>
-                                <input type="tel" class="form-control form-control-lg" id="cliente_telefono">
+                                <input type="tel" class="form-control form-control-lg" id="cliente_telefono" inputmode="numeric" pattern="[0-9]*">
                             </div>
                         </div>
                         <div class="col-12">
@@ -899,6 +914,15 @@ async function loadIngresoForm() {
                             </div>
                         </div>
                         <div class="col-12">
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="equipo_no_lista">
+                                <label class="form-check-label" for="equipo_no_lista">
+                                    No está en lista (admin completará marca y modelo)
+                                </label>
+                                <small class="text-muted d-block">El empleado no puede proponer marca/modelo para evitar errores.</small>
+                            </div>
+                        </div>
+                        <div class="col-12">
                             <label class="form-label">Color</label>
                             <div class="color-palette mb-4">
                                 <button type="button" class="color-btn" style="background: #000000;" id="color_Negro" onclick="selectColor(this, 'Negro')" title="Negro"></button>
@@ -918,7 +942,7 @@ async function loadIngresoForm() {
                         <div class="col-12 col-md-6">
                             <div class="mb-3">
                                 <label class="form-label">IMEI *</label>
-                                <input type="text" class="form-control form-control-lg" id="imei" inputmode="numeric" pattern="[0-9]+" placeholder="Solo números" required>
+                                <input type="text" class="form-control form-control-lg" id="imei" inputmode="numeric" pattern="[0-9]{15}" maxlength="15" placeholder="15 dígitos" required>
                             </div>
                         </div>
                         <div class="col-12 col-md-6">
@@ -1069,6 +1093,7 @@ async function loadIngresoForm() {
                                 <i class="fas fa-chevron-down"></i>
                             </button>
                             <span class="fallas-count" id="fallasSelectedCount">0 seleccionadas</span>
+                            <span class="fallas-total" id="fallasSelectedTotal">$ 0</span>
                         </div>
                         <div class="fallas-dropdown" id="fallasDropdown">
                             <div class="fallas-list" id="fallasCheckbox">
@@ -1116,11 +1141,6 @@ async function loadIngresoForm() {
                         <small class="text-muted">Dejar vacío para asignar después</small>
                     </div>
                     
-                    <div class="mb-4">
-                        <label class="form-label">Notas Adicionales</label>
-                        <textarea class="form-control form-control-lg" id="notas_adicionales" rows="2" placeholder="Notas internas o adicionales"></textarea>
-                    </div>
-
                     <form id="ingresoForm" onsubmit="submitIngreso(event); return false;">
                         <div class="wizard-nav">
                             <button type="button" class="btn btn-secondary btn-lg me-2" onclick="prevWizardStep()">
@@ -1137,9 +1157,16 @@ async function loadIngresoForm() {
     `;
 }
 
-async function buscarClientes() {
+async function buscarClientes(event) {
     const buscarInput = document.getElementById('buscar_cliente');
     const resultados = document.getElementById('resultadosBusqueda');
+
+    if (event?.type === 'keyup') {
+        const navigationKeys = ['ArrowDown', 'ArrowUp', 'Enter', 'Escape', 'Tab'];
+        if (navigationKeys.includes(event.key)) {
+            return;
+        }
+    }
     
     // Verificar que los elementos existan
     if (!buscarInput || !resultados) {
@@ -1150,6 +1177,8 @@ async function buscarClientes() {
     const query = buscarInput.value.trim();
     
     if (query.length < 2) {
+        clientesBusquedaActual = [];
+        clienteBusquedaIndiceActivo = -1;
         resultados.style.display = 'none';
         return;
     }
@@ -1161,6 +1190,8 @@ async function buscarClientes() {
         console.log('Respuesta de búsqueda:', response);
         
         if (!response.data || response.data.length === 0) {
+            clientesBusquedaActual = [];
+            clienteBusquedaIndiceActivo = -1;
             resultados.innerHTML = '<div class="list-group-item text-muted">No se encontraron clientes</div>';
             resultados.style.display = 'block';
             return;
@@ -1176,10 +1207,13 @@ async function buscarClientes() {
         });
         
         const clientesFiltrados = Array.from(clientesUnicos.values());
+        clientesBusquedaActual = clientesFiltrados;
+        clienteBusquedaIndiceActivo = -1;
         
-        resultados.innerHTML = clientesFiltrados.map(cliente => `
+        resultados.innerHTML = clientesFiltrados.map((cliente, index) => `
             <button type="button" class="list-group-item list-group-item-action" 
-                    onclick="seleccionarCliente('${cliente.nombre}', '${cliente.apellido}', '${cliente.cedula}', '${cliente.telefono || ''}', '${cliente.direccion || ''}')">
+                    data-cliente-index="${index}"
+                    onclick="seleccionarClienteDesdeBusqueda(${index})">
                 <div class="d-flex w-100 justify-content-between">
                     <strong>${cliente.nombre} ${cliente.apellido}</strong>
                 </div>
@@ -1187,29 +1221,141 @@ async function buscarClientes() {
             </button>
         `).join('');
         resultados.style.display = 'block';
+        actualizarOpcionClienteActiva();
     } catch (error) {
         console.error('Error buscando clientes:', error);
+        clientesBusquedaActual = [];
+        clienteBusquedaIndiceActivo = -1;
         resultados.innerHTML = '<div class="list-group-item text-danger">Error en la búsqueda</div>';
         resultados.style.display = 'block';
     }
 }
 
+function manejarNavegacionBusquedaClientes(event) {
+    const resultados = document.getElementById('resultadosBusqueda');
+    if (!resultados || resultados.style.display === 'none') {
+        return;
+    }
+
+    if (!clientesBusquedaActual.length) {
+        return;
+    }
+
+    const lastIndex = clientesBusquedaActual.length - 1;
+
+    if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        clienteBusquedaIndiceActivo = clienteBusquedaIndiceActivo >= lastIndex
+            ? 0
+            : clienteBusquedaIndiceActivo + 1;
+        actualizarOpcionClienteActiva();
+        return;
+    }
+
+    if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        clienteBusquedaIndiceActivo = clienteBusquedaIndiceActivo <= 0
+            ? lastIndex
+            : clienteBusquedaIndiceActivo - 1;
+        actualizarOpcionClienteActiva();
+        return;
+    }
+
+    if (event.key === 'Enter' && clienteBusquedaIndiceActivo >= 0) {
+        event.preventDefault();
+        seleccionarClienteDesdeBusqueda(clienteBusquedaIndiceActivo);
+        return;
+    }
+
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        resultados.style.display = 'none';
+        clienteBusquedaIndiceActivo = -1;
+    }
+}
+
+function actualizarOpcionClienteActiva() {
+    const items = document.querySelectorAll('#resultadosBusqueda .list-group-item-action');
+    items.forEach((item, index) => {
+        item.classList.toggle('active', index === clienteBusquedaIndiceActivo);
+    });
+
+    if (clienteBusquedaIndiceActivo < 0) {
+        return;
+    }
+
+    const activeItem = document.querySelector(`#resultadosBusqueda .list-group-item-action[data-cliente-index="${clienteBusquedaIndiceActivo}"]`);
+    if (activeItem) {
+        activeItem.scrollIntoView({ block: 'nearest' });
+    }
+}
+
+function seleccionarClienteDesdeBusqueda(index) {
+    const cliente = clientesBusquedaActual[index];
+    if (!cliente) {
+        return;
+    }
+
+    seleccionarCliente(
+        cliente.nombre,
+        cliente.apellido,
+        cliente.cedula,
+        cliente.telefono || '',
+        cliente.direccion || ''
+    );
+}
+
 function seleccionarCliente(nombre, apellido, cedula, telefono, direccion) {
-    document.getElementById('cliente_nombre').value = nombre;
-    document.getElementById('cliente_apellido').value = apellido;
+    document.getElementById('cliente_nombre').value = sanitizeOnlyLetters(nombre || '');
+    document.getElementById('cliente_apellido').value = sanitizeOnlyLetters(apellido || '');
     const cedulaInput = document.getElementById('cliente_cedula');
-    cedulaInput.value = cedula;
+    cedulaInput.value = sanitizeOnlyDigits(cedula || '');
     cedulaInput.dataset.selectedFromSearch = 'true';
     cedulaInput.dataset.selectedCedulaNorm = normalizeCedula(cedula);
-    document.getElementById('cliente_telefono').value = telefono;
+    document.getElementById('cliente_telefono').value = sanitizeOnlyDigits(telefono || '');
     document.getElementById('cliente_direccion').value = direccion;
     
     // Limpiar búsqueda
     document.getElementById('buscar_cliente').value = '';
     document.getElementById('resultadosBusqueda').style.display = 'none';
+    clientesBusquedaActual = [];
+    clienteBusquedaIndiceActivo = -1;
+}
+
+function toggleEquipoNoLista() {
+    const noListaCheckbox = document.getElementById('equipo_no_lista');
+    const marcaSelect = document.getElementById('marca_id');
+    const modeloSelect = document.getElementById('modelo_id');
+
+    if (!noListaCheckbox || !marcaSelect || !modeloSelect) {
+        return;
+    }
+
+    if (noListaCheckbox.checked) {
+        marcaSelect.value = '';
+        modeloSelect.innerHTML = '<option value="">Pendiente de catalogación por admin</option>';
+        modeloSelect.value = '';
+
+        marcaSelect.required = false;
+        modeloSelect.required = false;
+        marcaSelect.disabled = true;
+        modeloSelect.disabled = true;
+        return;
+    }
+
+    marcaSelect.disabled = false;
+    modeloSelect.disabled = false;
+    marcaSelect.required = true;
+    modeloSelect.required = true;
+    modeloSelect.innerHTML = '<option value="">Seleccione marca primero</option>';
 }
 
 async function loadModelosByMarca() {
+    const noListaCheckbox = document.getElementById('equipo_no_lista');
+    if (noListaCheckbox?.checked) {
+        return;
+    }
+
     const marcaId = document.getElementById('marca_id').value;
     console.log('DEBUG loadModelosByMarca: marcaId=', marcaId);
     
@@ -1249,6 +1395,7 @@ async function submitIngreso(e) {
     // Obtener valores del formulario
     const marcaValue = document.getElementById('marca_id').value;
     const modeloValue = document.getElementById('modelo_id').value;
+    const equipoNoLista = document.getElementById('equipo_no_lista')?.checked === true;
     const cedulaInput = document.getElementById('cliente_cedula');
     const cedulaNormalizada = normalizeCedula(cedulaInput?.value || '');
     const selectedFromSearch = cedulaInput?.dataset?.selectedFromSearch === 'true';
@@ -1256,18 +1403,18 @@ async function submitIngreso(e) {
     const isSelectedExistingClient = selectedFromSearch && selectedCedulaNorm === cedulaNormalizada;
     
     const datos = {
-        marca_id: parseInt(marcaValue),
-        modelo_id: parseInt(modeloValue),
+        marca_id: equipoNoLista ? null : parseInt(marcaValue),
+        modelo_id: equipoNoLista ? null : parseInt(modeloValue),
+        equipo_no_lista: equipoNoLista,
         tecnico_id: parseInt(document.getElementById('tecnico_id').value),
-        cliente_nombre: document.getElementById('cliente_nombre').value.toUpperCase(),
-        cliente_apellido: document.getElementById('cliente_apellido').value.toUpperCase(),
-        cliente_cedula: document.getElementById('cliente_cedula').value.toUpperCase(),
-        cliente_telefono: document.getElementById('cliente_telefono').value.toUpperCase(),
+        cliente_nombre: sanitizeOnlyLetters(document.getElementById('cliente_nombre').value).toUpperCase(),
+        cliente_apellido: sanitizeOnlyLetters(document.getElementById('cliente_apellido').value).toUpperCase(),
+        cliente_cedula: sanitizeOnlyDigits(document.getElementById('cliente_cedula').value),
+        cliente_telefono: sanitizeOnlyDigits(document.getElementById('cliente_telefono').value),
         cliente_direccion: document.getElementById('cliente_direccion').value.toUpperCase(),
         color: document.getElementById('color').value.toUpperCase(),
-        imei: (document.getElementById('imei').value || '').trim(),
+        imei: sanitizeOnlyDigits(document.getElementById('imei').value, 15),
         falla_general: document.getElementById('falla_general').value.toUpperCase(),
-        notas_adicionales: document.getElementById('notas_adicionales').value.toUpperCase(),
         estado_display: document.getElementById('visor_partido_select').value === 'SI',
         estado_tactil: false,
         estado_botones: document.getElementById('estado_botones_detalle').value !== 'BUENOS COMPLETOS',
@@ -1309,18 +1456,42 @@ async function submitIngreso(e) {
         return;
     }
 
-    if (!datos.marca_id || !datos.modelo_id || !datos.tecnico_id) {
-        currentWizardStep = 2;
+    if (!isOnlyLetters(datos.cliente_nombre) || !isOnlyLetters(datos.cliente_apellido)) {
+        currentWizardStep = 1;
         updateWizardDisplay();
-        showWizardStepAlert(2, 'Por favor seleccione Marca, Modelo y Técnico', 'danger');
+        showWizardStepAlert(1, 'Nombre y apellido solo deben contener texto', 'danger');
         isSubmittingIngreso = false;
         return;
     }
 
-    if (!datos.imei || !/^\d+$/.test(datos.imei)) {
+    if (!/^\d+$/.test(datos.cliente_cedula)) {
+        currentWizardStep = 1;
+        updateWizardDisplay();
+        showWizardStepAlert(1, 'La cédula solo debe contener números', 'danger');
+        isSubmittingIngreso = false;
+        return;
+    }
+
+    if (datos.cliente_telefono && !/^\d+$/.test(datos.cliente_telefono)) {
+        currentWizardStep = 1;
+        updateWizardDisplay();
+        showWizardStepAlert(1, 'El teléfono solo debe contener números', 'danger');
+        isSubmittingIngreso = false;
+        return;
+    }
+
+    if ((!datos.equipo_no_lista && (!datos.marca_id || !datos.modelo_id)) || !datos.tecnico_id) {
         currentWizardStep = 2;
         updateWizardDisplay();
-        showWizardStepAlert(2, 'El IMEI es obligatorio y solo debe contener números', 'danger');
+        showWizardStepAlert(2, 'Por favor seleccione Técnico y, si aplica, Marca y Modelo', 'danger');
+        isSubmittingIngreso = false;
+        return;
+    }
+
+    if (!datos.imei || !/^\d{15}$/.test(datos.imei)) {
+        currentWizardStep = 2;
+        updateWizardDisplay();
+        showWizardStepAlert(2, 'El IMEI es obligatorio y debe tener exactamente 15 dígitos', 'danger');
         isSubmittingIngreso = false;
         return;
     }
@@ -1345,6 +1516,14 @@ async function submitIngreso(e) {
         currentWizardStep = 5;
         updateWizardDisplay();
         showWizardStepAlert(5, 'Por favor complete el Detalle del Ingreso', 'danger');
+        isSubmittingIngreso = false;
+        return;
+    }
+
+    if (datos.tiene_clave && (datos.tipo_clave || '').toUpperCase() === 'NUMERICA' && datos.clave && !/^\d+$/.test(datos.clave)) {
+        currentWizardStep = 3;
+        updateWizardDisplay();
+        showWizardStepAlert(3, 'Si el tipo de clave es NUMÉRICA, solo se permiten números', 'danger');
         isSubmittingIngreso = false;
         return;
     }
@@ -1376,14 +1555,34 @@ async function submitIngreso(e) {
                 );
                 return;
             }
-            showWizardStepAlert(5, 'Error: ' + response.error, 'danger');
+            let missing = Array.isArray(response.missing_fields) && response.missing_fields.length
+                ? response.missing_fields
+                : [];
+
+            if (!missing.length && String(response.error || '').toLowerCase().includes('campos requeridos incompletos')) {
+                const localMissing = [];
+                if (!String(datos.cliente_nombre || '').trim()) localMissing.push('cliente_nombre');
+                if (!String(datos.cliente_apellido || '').trim()) localMissing.push('cliente_apellido');
+                if (!String(datos.cliente_cedula || '').trim()) localMissing.push('cliente_cedula');
+                if (!Number.isInteger(datos.tecnico_id) || datos.tecnico_id <= 0) localMissing.push('tecnico_id');
+                if (!datos.equipo_no_lista) {
+                    if (!Number.isInteger(datos.marca_id) || datos.marca_id <= 0) localMissing.push('marca_id');
+                    if (!Number.isInteger(datos.modelo_id) || datos.modelo_id <= 0) localMissing.push('modelo_id');
+                }
+                missing = localMissing;
+            }
+
+            const missingSuffix = missing.length ? ` (${missing.join(', ')})` : '';
+            showWizardStepAlert(5, 'Error: ' + response.error + missingSuffix, 'danger');
             return;
         }
         
         if (response.numero_ingreso || response.id) {
             const numeroIngreso = response.numero_ingreso || response.id;
-            showWizardStepAlert(5, `¡Ingreso creado exitosamente! Número: ${numeroIngreso}`, 'success');
+            const catalogoMsg = datos.equipo_no_lista ? ' (equipo pendiente de catalogación por admin)' : '';
+            showWizardStepAlert(5, `¡Ingreso creado exitosamente! Número: ${numeroIngreso}${catalogoMsg}`, 'success');
             document.getElementById('ingresoForm').reset();
+            toggleEquipoNoLista();
             toggleBandejaSimColor();
 
             if (response.id) {
@@ -1639,9 +1838,6 @@ async function loadTecnicoPanel() {
     
     return `
         <h2 class="mb-4">Panel Técnico - Gestión de Reparaciones</h2>
-        <div class="alert alert-light border mb-3 py-2">
-            <small><strong>Flujo:</strong> Pendiente → En Reparación → Reparado/No Reparable → Entregado</small>
-        </div>
 
         <div class="row g-2 mb-3">
             <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">Pendientes</small><div class="fw-bold">${counts.pendiente}</div></div></div>
@@ -2689,13 +2885,14 @@ async function loadAdminTecnicos() {
 }
 
 async function loadAdminClientes() {
-    const ingresos = await apiCall('/ingresos');
+    const ingresos = await apiCall('/ingresos?limit=1000');
     
     // Extraer clientes únicos
     const clientesMap = new Map();
     if (ingresos && ingresos.data) {
         ingresos.data.forEach(ingreso => {
-            const key = ingreso.cliente_cedula;
+            const key = normalizeCedula(ingreso.cliente_cedula);
+            if (!key) return;
             if (!clientesMap.has(key)) {
                 clientesMap.set(key, {
                     nombre: ingreso.cliente_nombre,
@@ -3191,6 +3388,11 @@ async function verDetalles(ingresoId) {
     const fechaEntrega = response.fecha_entrega
         ? new Date(response.fecha_entrega).toLocaleString('es-ES')
         : 'Sin dato';
+    const currentUser = getCurrentUserSafe();
+    const isAdmin = currentUser?.rol === 'admin';
+    const catalogacionPendiente = Boolean(response.equipo_no_lista);
+    const equipoMarcaTexto = catalogacionPendiente ? 'PENDIENTE POR ADMIN' : clean(response.marca);
+    const equipoModeloTexto = catalogacionPendiente ? 'PENDIENTE POR ADMIN' : clean(response.modelo);
 
     const mainContent = document.getElementById('mainContent');
     mainContent.innerHTML = `
@@ -3222,8 +3424,9 @@ async function verDetalles(ingresoId) {
                         <h5 class="mb-0">Datos del Equipo</h5>
                     </div>
                     <div class="card-body">
-                        <p><strong>Marca:</strong> ${clean(response.marca)}</p>
-                        <p><strong>Modelo:</strong> ${clean(response.modelo)}</p>
+                        <p><strong>Marca:</strong> ${equipoMarcaTexto}</p>
+                        <p><strong>Modelo:</strong> ${equipoModeloTexto}</p>
+                        ${catalogacionPendiente ? '<p><span class="badge bg-warning text-dark">Pendiente de catalogación por admin</span></p>' : ''}
                         <p><strong>Color:</strong> ${clean(response.color)}</p>
                         <p><strong>IMEI:</strong> ${clean(response.imei)}</p>
                         <p><strong>Clave:</strong> ${claveTexto}</p>
@@ -3310,11 +3513,138 @@ async function verDetalles(ingresoId) {
             <button class="btn btn-primary" onclick="loadPage('registros')">
                 <i class="fas fa-arrow-left me-2"></i> Volver
             </button>
+            ${isAdmin && catalogacionPendiente ? `
+                <button class="btn btn-warning" onclick="completarCatalogacionIngreso(${ingresoId})">
+                    <i class="fas fa-tags me-2"></i> Completar marca/modelo
+                </button>
+            ` : ''}
             <button class="btn btn-success" onclick="printTicket(${ingresoId})">
                 <i class="fas fa-print me-2"></i> Imprimir Ticket
             </button>
         </div>
     `;
+}
+
+async function completarCatalogacionIngreso(ingresoId) {
+    const currentUser = getCurrentUserSafe();
+    if (currentUser?.rol !== 'admin') {
+        showAlert('Solo admin puede completar marca/modelo', 'danger');
+        return;
+    }
+
+    try {
+        const [ingreso, marcas] = await Promise.all([
+            apiCall(`/ingresos/${ingresoId}`),
+            apiCall('/marcas')
+        ]);
+
+        if (!ingreso || ingreso.error) {
+            showAlert(ingreso?.error || 'No se pudo cargar el ingreso', 'danger');
+            return;
+        }
+
+        if (!Array.isArray(marcas) || marcas.length === 0) {
+            showAlert('No hay marcas disponibles para catalogar', 'danger');
+            return;
+        }
+
+        const modalId = `catalogacionModal_${Date.now()}`;
+        const modal = document.createElement('div');
+        modal.className = 'modal fade';
+        modal.id = modalId;
+        modal.tabIndex = -1;
+        modal.setAttribute('aria-hidden', 'true');
+
+        modal.innerHTML = `
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Completar marca/modelo · Ingreso ${ingreso.numero_ingreso}</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">Marca</label>
+                            <select class="form-select" id="${modalId}_marca">
+                                <option value="">Seleccione una marca</option>
+                                ${marcas.map((m) => `<option value="${m.id}">${m.nombre}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="mb-1">
+                            <label class="form-label">Modelo</label>
+                            <select class="form-select" id="${modalId}_modelo">
+                                <option value="">Seleccione marca primero</option>
+                            </select>
+                        </div>
+                        <small class="text-muted">Solo admin puede realizar esta actualización.</small>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="button" class="btn btn-primary" id="${modalId}_save">Guardar</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+        const bsModal = new bootstrap.Modal(modal);
+        const marcaSelect = modal.querySelector(`#${modalId}_marca`);
+        const modeloSelect = modal.querySelector(`#${modalId}_modelo`);
+        const saveButton = modal.querySelector(`#${modalId}_save`);
+
+        marcaSelect.addEventListener('change', async () => {
+            const marcaId = parseInt(marcaSelect.value, 10);
+            if (!marcaId) {
+                modeloSelect.innerHTML = '<option value="">Seleccione marca primero</option>';
+                return;
+            }
+
+            const modelos = await apiCall(`/marcas/${marcaId}/modelos`);
+            if (!Array.isArray(modelos) || modelos.length === 0) {
+                modeloSelect.innerHTML = '<option value="">No hay modelos para esta marca</option>';
+                return;
+            }
+
+            modeloSelect.innerHTML = '<option value="">Seleccione un modelo</option>' +
+                modelos.map((modelo) => `<option value="${modelo.id}">${modelo.nombre}</option>`).join('');
+        });
+
+        saveButton.addEventListener('click', async () => {
+            const marcaId = parseInt(marcaSelect.value, 10);
+            const modeloId = parseInt(modeloSelect.value, 10);
+
+            if (!marcaId || !modeloId) {
+                showAlert('Seleccione marca y modelo', 'danger');
+                return;
+            }
+
+            const response = await apiCall(`/ingresos/${ingresoId}`, {
+                method: 'PUT',
+                body: JSON.stringify({
+                    marca_id: marcaId,
+                    modelo_id: modeloId,
+                    equipo_no_lista: false
+                })
+            });
+
+            if (response?.success) {
+                bsModal.hide();
+                showAlert('Marca y modelo actualizados correctamente', 'success');
+                verDetalles(ingresoId);
+                return;
+            }
+
+            showAlert(response?.error || 'No se pudo guardar la catalogación', 'danger');
+        });
+
+        modal.addEventListener('hidden.bs.modal', () => {
+            modal.remove();
+        }, { once: true });
+
+        bsModal.show();
+    } catch (error) {
+        showAlert(`Error al completar catalogación: ${error.message}`, 'danger');
+    }
 }
 
 async function verDetallesTecnico(ingresoId) {
@@ -3324,6 +3654,8 @@ async function verDetallesTecnico(ingresoId) {
         showAlert('Error al cargar detalles', 'danger');
         return;
     }
+
+    const ingresoBloqueado = response.estado_ingreso === 'entregado';
     
     const mainContent = document.getElementById('mainContent');
     
@@ -3364,6 +3696,58 @@ async function verDetallesTecnico(ingresoId) {
             </div>
         `;
     }
+
+    const garantiaMovimientos = Array.isArray(response.notas)
+        ? response.notas.filter((nota) => /\[GARANTIA\]|GARANT[ÍI]A/i.test(nota?.contenido || ''))
+        : [];
+
+    const garantiaHistorialHtml = garantiaMovimientos.length > 0
+        ? `
+            <div class="card mb-4">
+                <div class="card-header bg-warning">
+                    <h5 class="mb-0">Historial de Garantía</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th>Fecha</th>
+                                    <th>Usuario</th>
+                                    <th>Estado</th>
+                                    <th>Detalle</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${garantiaMovimientos.map((mov) => {
+                                    const estado = getGarantiaEstadoFromContenido(mov.contenido || '');
+                                    const estadoLabel = {
+                                        abierta: 'Pendiente',
+                                        en_gestion: 'En gestión',
+                                        resuelta: 'Resuelta'
+                                    }[estado] || 'Pendiente';
+                                    const estadoClass = {
+                                        abierta: 'bg-warning text-dark',
+                                        en_gestion: 'bg-primary',
+                                        resuelta: 'bg-success'
+                                    }[estado] || 'bg-secondary';
+
+                                    return `
+                                        <tr>
+                                            <td><small>${mov.fecha_creacion ? new Date(mov.fecha_creacion).toLocaleString('es-ES') : 'N/A'}</small></td>
+                                            <td><small>${mov.usuario || 'N/A'}</small></td>
+                                            <td><span class="badge ${estadoClass}">${estadoLabel}</span></td>
+                                            <td><small>${limpiarTextoGarantia(mov.contenido || '') || 'Sin detalle'}</small></td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `
+        : '';
     
     mainContent.innerHTML = `
         <input type="hidden" id="detalleIngresoId" value="${ingresoId}">
@@ -3376,6 +3760,7 @@ async function verDetallesTecnico(ingresoId) {
         </div>
         
         ${reparacionInfo}
+        ${garantiaHistorialHtml}
         
         <div class="card mb-4">
             <div class="card-header bg-primary text-white">
@@ -3415,6 +3800,11 @@ async function verDetallesTecnico(ingresoId) {
                         <h5 class="mb-0">Fallas y Reparaciones</h5>
                     </div>
                     <div class="card-body">
+                        ${ingresoBloqueado ? `
+                            <div class="alert alert-warning">
+                                Este ingreso está <strong>entregado</strong> y no permite modificaciones para proteger la trazabilidad. Solo puedes usar <strong>Ingresar por Garantía</strong>.
+                            </div>
+                        ` : ''}
                         ${response.fallas && response.fallas.length > 0 ? `
                             <div class="table-responsive">
                                 <table class="table table-sm">
@@ -3433,10 +3823,12 @@ async function verDetallesTecnico(ingresoId) {
                                                 <td>
                                                     <input type="number" class="form-control form-control-sm" 
                                                            value="${f.valor_reparacion}" 
+                                                           ${ingresoBloqueado ? 'disabled' : ''}
                                                            onchange="updateValor(${f.id}, this.value)">
                                                 </td>
                                                 <td>
                                                         <select class="form-select form-select-sm" 
+                                                            ${ingresoBloqueado ? 'disabled' : ''}
                                                             onchange="onDetalleFallaEstadoChange(${ingresoId}, ${f.id}, this.value)">
                                                         <option value="pendiente" ${f.estado_falla === 'pendiente' ? 'selected' : ''}>Pendiente</option>
                                                         <option value="reparada" ${f.estado_falla === 'reparada' ? 'selected' : ''}>Reparada</option>
@@ -3445,6 +3837,7 @@ async function verDetallesTecnico(ingresoId) {
                                                 </td>
                                                 <td>
                                                     <button class="btn btn-sm btn-danger" 
+                                                            ${ingresoBloqueado ? 'disabled' : ''}
                                                             onclick="removeFalla(${f.id})">
                                                         <i class="fas fa-trash"></i>
                                                     </button>
@@ -3456,7 +3849,7 @@ async function verDetallesTecnico(ingresoId) {
                             </div>
                         ` : '<p class="text-muted">Sin fallas registradas</p>'}
                         
-                        <button class="btn btn-sm btn-primary" onclick="addNewFalla(${ingresoId})">
+                        <button class="btn btn-sm btn-primary" ${ingresoBloqueado ? 'disabled' : ''} onclick="addNewFalla(${ingresoId})">
                             <i class="fas fa-plus me-2"></i> Agregar Falla
                         </button>
                     </div>
@@ -3470,15 +3863,15 @@ async function verDetallesTecnico(ingresoId) {
                     </div>
                     <div class="card-body">
                         <div class="d-grid gap-2">
-                            <select class="form-select mb-2" id="estadoSelect_${ingresoId}" onchange="onDetalleIngresoEstadoChange(${ingresoId}, this.value)">
+                            <select class="form-select mb-2" ${ingresoBloqueado ? 'disabled' : ''} id="estadoSelect_${ingresoId}" onchange="onDetalleIngresoEstadoChange(${ingresoId}, this.value)">
                                 <option value="pendiente" ${response.estado_ingreso === 'pendiente' ? 'selected' : ''}>Pendiente</option>
                                 <option value="en_reparacion" ${response.estado_ingreso === 'en_reparacion' ? 'selected' : ''}>En Reparación</option>
                                 <option value="reparado" ${response.estado_ingreso === 'reparado' ? 'selected' : ''}>Reparado</option>
                                 <option value="no_reparable" ${response.estado_ingreso === 'no_reparable' ? 'selected' : ''}>No Reparable</option>
                                 <option value="entregado" ${response.estado_ingreso === 'entregado' ? 'selected' : ''}>Entregado</option>
                             </select>
-                            <small class="text-muted">Cambia el estado desde la lista para aplicar inmediatamente.</small>
-                            ${['reparado', 'entregado'].includes(response.estado_ingreso) ? `
+                            <small class="text-muted">${ingresoBloqueado ? 'Estado bloqueado por trazabilidad. Usa garantía para reingresar.' : 'Cambia el estado desde la lista para aplicar inmediatamente.'}</small>
+                            ${response.estado_ingreso === 'entregado' ? `
                                 <div class="border rounded p-2 bg-light">
                                     <label class="form-label mb-1"><strong>Garantía</strong></label>
                                     <textarea class="form-control form-control-sm mb-2" id="garantiaComentario_${ingresoId}" rows="3" placeholder="Motivo de garantía (obligatorio)"></textarea>
@@ -4176,30 +4569,15 @@ async function updateEstado(ingresoFallaId, nuevoEstado) {
         
         if (response.success) {
             showAlert(`Estado de falla actualizado a "${nuevoEstado}"`, 'success');
-            if (nuevoEstado === 'no_reparable') {
-                const ingresoId = Number(document.getElementById('detalleIngresoId')?.value);
-                if (ingresoId) {
-                    await apiCall(`/ingresos/${ingresoId}`, {
-                        method: 'PUT',
-                        body: JSON.stringify({ estado_ingreso: 'no_reparable' })
-                    });
-                    showAlert('Ingreso marcado como No Reparable', 'info');
-                }
-            }
-            // Recargar la página actual para mostrar cambios
-            if (window.location.hash.includes('tecnico')) {
-                loadTecnicoPanel();
-            }
-            const ingresoId = Number(document.getElementById('detalleIngresoId')?.value);
-            if (ingresoId) {
-                verDetallesTecnico(ingresoId);
-            }
+            return true;
         } else {
             showAlert('Error al actualizar estado: ' + (response.error || 'desconocido'), 'danger');
+            return false;
         }
     } catch (error) {
         console.error('Error en updateEstado:', error);
         showAlert('Error de conexión: ' + error.message, 'danger');
+        return false;
     }
 }
 
@@ -4268,7 +4646,11 @@ async function onDetalleIngresoEstadoChange(ingresoId, nuevoEstado) {
 }
 
 async function onDetalleFallaEstadoChange(ingresoId, ingresoFallaId, nuevoEstado) {
-    await updateEstado(ingresoFallaId, nuevoEstado);
+    const actualizado = await updateEstado(ingresoFallaId, nuevoEstado);
+    if (!actualizado) {
+        return;
+    }
+
     if (ingresoId) {
         await syncIngresoEstadoFromFallas(ingresoId);
         verDetallesTecnico(ingresoId);
@@ -4294,10 +4676,12 @@ async function syncIngresoEstadoFromFallas(ingresoId) {
         }
 
         let estadoObjetivo = 'en_reparacion';
-        if (fallas.some(f => f.estado_falla === 'no_reparable')) {
-            estadoObjetivo = 'no_reparable';
-        } else if (fallas.every(f => f.estado_falla === 'reparada')) {
+        if (fallas.some(f => f.estado_falla === 'pendiente')) {
+            estadoObjetivo = 'en_reparacion';
+        } else if (fallas.some(f => f.estado_falla === 'reparada')) {
             estadoObjetivo = 'reparado';
+        } else {
+            estadoObjetivo = 'no_reparable';
         }
 
         if (ingreso.estado_ingreso !== estadoObjetivo) {
@@ -4333,7 +4717,6 @@ async function setIngresoEstado(ingresoId, nuevoEstado) {
 async function procesarGarantiaEntregado(ingresoId) {
     const comentarioEl = document.getElementById(`garantiaComentario_${ingresoId}`);
     const comentario = (comentarioEl?.value || '').trim();
-    const estadoActual = document.getElementById('detalleEstadoActual')?.value;
 
     if (!comentario) {
         showAlert('Debes escribir el motivo de garantía', 'warning');
@@ -4349,24 +4732,19 @@ async function procesarGarantiaEntregado(ingresoId) {
     }
 
     try {
-        const notaResponse = await apiCall(`/ingresos/${ingresoId}/notas`, {
+        const response = await apiCall(`/ingresos/${ingresoId}/garantia`, {
             method: 'POST',
             body: JSON.stringify({
-                contenido: `[GARANTIA][ABIERTA]: ${comentario}`,
-                tipo: 'tecnica'
+                comentario
             })
         });
 
-        if (!notaResponse || (notaResponse.error && !notaResponse.id)) {
-            showAlert(notaResponse?.error || 'No se pudo guardar el comentario de garantía', 'danger');
+        if (!response || response.error || !response.success) {
+            showAlert(response?.error || 'No se pudo reingresar por garantía', 'danger');
             return;
         }
 
-        if (estadoActual) {
-            await setIngresoEstado(ingresoId, estadoActual);
-        }
-
-        showAlert('Garantía registrada correctamente en su pestaña dedicada', 'success');
+        showAlert('Ingreso reabierto por garantía correctamente', 'success');
         verDetallesTecnico(ingresoId);
     } catch (error) {
         console.error('Error en procesarGarantiaEntregado:', error);
@@ -4814,8 +5192,9 @@ async function deleteFalla(id, nombre) {
 async function editarCliente(cedula) {
     try {
         // Obtener datos del cliente
-        const ingresos = await apiCall('/ingresos');
-        const cliente = ingresos.data.find(i => i.cliente_cedula === cedula);
+        const ingresos = await apiCall('/ingresos?limit=1000');
+        const cedulaNorm = normalizeCedula(cedula);
+        const cliente = ingresos.data.find(i => normalizeCedula(i.cliente_cedula) === cedulaNorm);
         
         if (!cliente) {
             showAlert('Cliente no encontrado', 'danger');
@@ -4903,25 +5282,23 @@ async function submitEditarCliente(event, cedula) {
     }
     
     try {
-        // Obtener todos los ingresos del cliente
-        const ingresos = await apiCall('/ingresos');
-        const clienteIngresos = ingresos.data.filter(i => i.cliente_cedula === cedula);
-        
-        // Actualizar cada ingreso con los nuevos datos
-        for (const ingreso of clienteIngresos) {
-            await apiCall(`/ingresos/${ingreso.id}`, {
-                method: 'PUT',
-                body: JSON.stringify({
-                    cliente_nombre: nombre,
-                    cliente_apellido: apellido,
-                    cliente_cedula: cedulaNueva,
-                    cliente_telefono: telefono,
-                    cliente_direccion: direccion
-                })
-            });
+        const response = await apiCall(`/clientes/${encodeURIComponent(cedula)}/actualizar`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                cliente_nombre: nombre,
+                cliente_apellido: apellido,
+                cliente_cedula: cedulaNueva,
+                cliente_telefono: telefono,
+                cliente_direccion: direccion
+            })
+        });
+
+        if (!response?.success) {
+            showAlert(response?.error || 'No se pudo actualizar el cliente', 'danger');
+            return;
         }
         
-        showAlert('Cliente actualizado correctamente', 'success');
+        showAlert(`Cliente actualizado correctamente (${response.updated || 0} ingresos)`, 'success');
         
         // Cerrar modal
         const modal = bootstrap.Modal.getInstance(document.getElementById('editClienteModal'));
@@ -4938,8 +5315,9 @@ async function submitEditarCliente(event, cedula) {
 async function verClienteIngresos(cedula) {
     try {
         // Obtener ingresos del cliente
-        const ingresos = await apiCall('/ingresos');
-        const clienteIngresos = ingresos.data.filter(i => i.cliente_cedula === cedula);
+        const ingresos = await apiCall('/ingresos?limit=1000');
+        const cedulaNorm = normalizeCedula(cedula);
+        const clienteIngresos = ingresos.data.filter(i => normalizeCedula(i.cliente_cedula) === cedulaNorm);
         
         if (clienteIngresos.length === 0) {
             showAlert('No hay ingresos para este cliente', 'info');
@@ -5214,15 +5592,88 @@ function normalizeCedula(cedula) {
     return String(cedula || '').toUpperCase().replace(/[.\-\s]/g, '');
 }
 
+function sanitizeOnlyLetters(value) {
+    return String(value || '')
+        .replace(/[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trimStart();
+}
+
+function isOnlyLetters(value) {
+    const text = String(value || '').trim();
+    return /^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s]+$/.test(text);
+}
+
+function sanitizeOnlyDigits(value, maxLength = null) {
+    const digits = String(value || '').replace(/\D/g, '');
+    if (!maxLength || maxLength <= 0) {
+        return digits;
+    }
+    return digits.slice(0, maxLength);
+}
+
+function setupIngresoFieldRestrictions() {
+    const nombreInput = document.getElementById('cliente_nombre');
+    if (nombreInput) {
+        nombreInput.addEventListener('input', () => {
+            nombreInput.value = sanitizeOnlyLetters(nombreInput.value);
+        });
+    }
+
+    const apellidoInput = document.getElementById('cliente_apellido');
+    if (apellidoInput) {
+        apellidoInput.addEventListener('input', () => {
+            apellidoInput.value = sanitizeOnlyLetters(apellidoInput.value);
+        });
+    }
+
+    const cedulaInput = document.getElementById('cliente_cedula');
+    if (cedulaInput) {
+        cedulaInput.addEventListener('input', () => {
+            cedulaInput.value = sanitizeOnlyDigits(cedulaInput.value);
+        });
+    }
+
+    const telefonoInput = document.getElementById('cliente_telefono');
+    if (telefonoInput) {
+        telefonoInput.addEventListener('input', () => {
+            telefonoInput.value = sanitizeOnlyDigits(telefonoInput.value);
+        });
+    }
+
+    const imeiInput = document.getElementById('imei');
+    if (imeiInput) {
+        imeiInput.addEventListener('input', () => {
+            imeiInput.value = sanitizeOnlyDigits(imeiInput.value, 15);
+        });
+    }
+}
+
 async function nextWizardStep() {
     if (currentWizardStep === 1) {
         // Validar paso 1: Datos del cliente
         const nombre = document.getElementById('cliente_nombre')?.value.trim();
         const apellido = document.getElementById('cliente_apellido')?.value.trim();
-        const cedula = document.getElementById('cliente_cedula')?.value.trim();
+        const cedula = sanitizeOnlyDigits(document.getElementById('cliente_cedula')?.value.trim());
+        const telefono = sanitizeOnlyDigits(document.getElementById('cliente_telefono')?.value.trim());
         
         if (!nombre || !apellido || !cedula) {
             showWizardStepAlert(1, 'Por favor complete los datos requeridos del cliente (Nombre, Apellido, Cédula)', 'warning');
+            return;
+        }
+
+        if (!isOnlyLetters(nombre) || !isOnlyLetters(apellido)) {
+            showWizardStepAlert(1, 'Nombre y apellido solo deben contener texto', 'warning');
+            return;
+        }
+
+        if (!/^\d+$/.test(cedula)) {
+            showWizardStepAlert(1, 'La cédula solo debe contener números', 'warning');
+            return;
+        }
+
+        if (telefono && !/^\d+$/.test(telefono)) {
+            showWizardStepAlert(1, 'El teléfono solo debe contener números', 'warning');
             return;
         }
 
@@ -5257,10 +5708,18 @@ async function nextWizardStep() {
         // Validar paso 2: Datos del equipo
         const marca = document.getElementById('marca_id')?.value;
         const modelo = document.getElementById('modelo_id')?.value;
+        const equipoNoLista = document.getElementById('equipo_no_lista')?.checked === true;
         const imei = document.getElementById('imei')?.value.trim();
+        const tecnicoId = document.getElementById('tecnico_id')?.value;
         
-        if (!marca || !modelo || !imei || !/^\d+$/.test(imei)) {
-            showWizardStepAlert(2, 'Complete Marca, Modelo e IMEI (solo números)', 'warning');
+        const faltaCatalogo = !equipoNoLista && (!marca || !modelo);
+        const imeiInvalido = !/^\d{15}$/.test(imei || '');
+
+        if (faltaCatalogo || imeiInvalido || !tecnicoId) {
+            const mensaje = equipoNoLista
+                ? 'Complete IMEI (15 dígitos) y técnico asignado'
+                : 'Complete Marca, Modelo, IMEI (15 dígitos) y técnico asignado';
+            showWizardStepAlert(2, mensaje, 'warning');
             return;
         }
         clearWizardStepAlert(2);
@@ -5337,6 +5796,51 @@ function toggleClave() {
     const claveDiv = document.getElementById('claveDiv');
     if (!tieneClaveSelect || !claveDiv) return;
     claveDiv.style.display = tieneClaveSelect.value === 'SI' ? 'block' : 'none';
+
+    if (tieneClaveSelect.value !== 'SI') {
+        const claveInput = document.getElementById('clave');
+        if (claveInput) {
+            claveInput.value = '';
+        }
+    }
+
+    applyClaveInputRules();
+}
+
+function applyClaveInputRules() {
+    const tieneClaveSelect = document.getElementById('tiene_clave');
+    const tipoClaveSelect = document.getElementById('tipo_clave');
+    const claveInput = document.getElementById('clave');
+
+    if (!tieneClaveSelect || !tipoClaveSelect || !claveInput) {
+        return;
+    }
+
+    const esNumerica = tieneClaveSelect.value === 'SI' && tipoClaveSelect.value === 'NUMERICA';
+
+    if (esNumerica) {
+        claveInput.value = String(claveInput.value || '').replace(/\D/g, '');
+        claveInput.setAttribute('inputmode', 'numeric');
+        claveInput.setAttribute('pattern', '[0-9]*');
+        claveInput.setAttribute('placeholder', 'Ingrese solo números');
+        return;
+    }
+
+    claveInput.removeAttribute('pattern');
+    claveInput.setAttribute('inputmode', 'text');
+    claveInput.setAttribute('placeholder', 'Ingrese la clave');
+}
+
+function handleClaveInputChange(event) {
+    const tipoClaveSelect = document.getElementById('tipo_clave');
+    const tieneClaveSelect = document.getElementById('tiene_clave');
+    if (!tipoClaveSelect || !tieneClaveSelect) {
+        return;
+    }
+
+    if (tieneClaveSelect.value === 'SI' && tipoClaveSelect.value === 'NUMERICA') {
+        event.target.value = String(event.target.value || '').replace(/\D/g, '');
+    }
 }
 
 function toggleBandejaSimColor() {
@@ -5374,11 +5878,15 @@ function formatNumberCO(value) {
 
 function updateFallasSelectedCount() {
     const countEl = document.getElementById('fallasSelectedCount');
-    if (!countEl) return;
+    const totalEl = document.getElementById('fallasSelectedTotal');
+    if (!countEl || !totalEl) return;
 
-    const selectedCount = document.querySelectorAll('.falla-checkbox:checked').length;
+    const selected = Array.from(document.querySelectorAll('.falla-checkbox:checked'));
+    const selectedCount = selected.length;
+    const totalSugerido = selected.reduce((sum, cb) => sum + Number(cb.dataset.precio || 0), 0);
     const texto = selectedCount === 1 ? '1 seleccionada' : `${selectedCount} seleccionadas`;
     countEl.textContent = texto;
+    totalEl.textContent = `$ ${Number(totalSugerido || 0).toLocaleString('es-CO')}`;
 }
 
 function filterFallasList() {

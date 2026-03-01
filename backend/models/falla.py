@@ -67,6 +67,62 @@ class Falla:
 
 class IngresoFalla:
     """Modelo de fallas por ingreso técnico"""
+
+    @staticmethod
+    def recalculate_ingreso_from_fallas(ingreso_id):
+        """Recalcula valor_total y estado del ingreso según fallas individuales."""
+        stats = db.execute_single(
+            '''
+            SELECT
+                COUNT(*) AS total_fallas,
+                SUM(CASE WHEN estado_falla = 'pendiente' THEN 1 ELSE 0 END) AS pendientes,
+                SUM(CASE WHEN estado_falla = 'reparada' THEN 1 ELSE 0 END) AS reparadas,
+                SUM(CASE WHEN estado_falla = 'no_reparable' THEN 1 ELSE 0 END) AS no_reparables,
+                COALESCE(SUM(CASE WHEN estado_falla = 'reparada' THEN valor_reparacion ELSE 0 END), 0) AS total_reparado
+            FROM ingreso_fallas
+            WHERE ingreso_id = ?
+            ''',
+            (ingreso_id,)
+        )
+
+        if not stats:
+            return
+
+        stats = dict(stats)
+
+        db.execute_update(
+            "UPDATE ingresos SET valor_total = ? WHERE id = ?",
+            (stats['total_reparado'], ingreso_id)
+        )
+
+        ingreso = db.execute_single("SELECT estado_ingreso FROM ingresos WHERE id = ?", (ingreso_id,))
+        if not ingreso:
+            return
+
+        ingreso = dict(ingreso)
+
+        estado_actual = (ingreso.get('estado_ingreso') or '').lower()
+        if estado_actual in ('entregado', 'cancelado'):
+            return
+
+        total_fallas = int(stats['total_fallas'] or 0)
+        pendientes = int(stats['pendientes'] or 0)
+        reparadas = int(stats['reparadas'] or 0)
+
+        if total_fallas == 0:
+            nuevo_estado = 'pendiente'
+        elif pendientes > 0:
+            nuevo_estado = 'en_reparacion'
+        elif reparadas > 0:
+            nuevo_estado = 'reparado'
+        else:
+            nuevo_estado = 'no_reparable'
+
+        if nuevo_estado != estado_actual:
+            db.execute_update(
+                "UPDATE ingresos SET estado_ingreso = ? WHERE id = ?",
+                (nuevo_estado, ingreso_id)
+            )
     
     @staticmethod
     def add_to_ingreso(ingreso_id, falla_id, valor_reparacion, usuario_id):
@@ -76,6 +132,7 @@ class IngresoFalla:
         VALUES (?, ?, ?, ?)
         '''
         falla_ingreso_id = db.execute_update(query, (ingreso_id, falla_id, valor_reparacion, usuario_id))
+        IngresoFalla.recalculate_ingreso_from_fallas(ingreso_id)
         return falla_ingreso_id
     
     @staticmethod
@@ -103,15 +160,25 @@ class IngresoFalla:
     @staticmethod
     def update_valor(ingreso_falla_id, valor_reparacion):
         """Actualiza el valor de reparación de una falla"""
+        row = db.execute_single("SELECT ingreso_id FROM ingreso_fallas WHERE id = ?", (ingreso_falla_id,))
+        if not row:
+            raise Exception('Falla de ingreso no encontrada')
+
         query = "UPDATE ingreso_fallas SET valor_reparacion = ? WHERE id = ?"
         db.execute_update(query, (valor_reparacion, ingreso_falla_id))
+        IngresoFalla.recalculate_ingreso_from_fallas(row['ingreso_id'])
         return True
     
     @staticmethod
     def update_estado(ingreso_falla_id, estado_falla):
         """Actualiza el estado de una falla"""
+        row = db.execute_single("SELECT ingreso_id FROM ingreso_fallas WHERE id = ?", (ingreso_falla_id,))
+        if not row:
+            raise Exception('Falla de ingreso no encontrada')
+
         query = "UPDATE ingreso_fallas SET estado_falla = ? WHERE id = ?"
         db.execute_update(query, (estado_falla, ingreso_falla_id))
+        IngresoFalla.recalculate_ingreso_from_fallas(row['ingreso_id'])
         return True
     
     @staticmethod
@@ -124,6 +191,11 @@ class IngresoFalla:
     @staticmethod
     def delete_from_ingreso(ingreso_falla_id):
         """Elimina una falla de un ingreso"""
+        row = db.execute_single("SELECT ingreso_id FROM ingreso_fallas WHERE id = ?", (ingreso_falla_id,))
+        if not row:
+            raise Exception('Falla de ingreso no encontrada')
+
         query = "DELETE FROM ingreso_fallas WHERE id = ?"
         db.execute_update(query, (ingreso_falla_id,))
+        IngresoFalla.recalculate_ingreso_from_fallas(row['ingreso_id'])
         return True

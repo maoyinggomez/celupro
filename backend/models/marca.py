@@ -1,6 +1,10 @@
 from .database import db
 
 
+def normalize_brand_name(name):
+    return ' '.join((name or '').strip().split()).upper()
+
+
 def normalize_model_name(name):
     return ' '.join((name or '').strip().split()).upper()
 
@@ -68,6 +72,32 @@ class Marca:
         db.execute_update("UPDATE marcas SET orden = ? WHERE id = ?", (neighbor['orden'], current['id']))
         db.execute_update("UPDATE marcas SET orden = ? WHERE id = ?", (current['orden'], neighbor['id']))
         return True
+
+    @staticmethod
+    def get_or_create_by_name(nombre):
+        """Obtiene una marca por nombre normalizado o la crea si no existe"""
+        normalized_name = normalize_brand_name(nombre)
+        if not normalized_name:
+            raise Exception('Nombre de marca requerido')
+
+        existing = db.execute_single(
+            "SELECT id, nombre, orden FROM marcas WHERE UPPER(TRIM(nombre)) = ?",
+            (normalized_name,)
+        )
+        if existing:
+            return dict(existing)
+
+        next_order_query = "SELECT COALESCE(MAX(orden), 0) + 1 AS next_order FROM marcas"
+        next_order = db.execute_single(next_order_query)['next_order']
+        marca_id = db.execute_update(
+            "INSERT INTO marcas (nombre, orden) VALUES (?, ?)",
+            (normalized_name, next_order)
+        )
+        return {
+            'id': marca_id,
+            'nombre': normalized_name,
+            'orden': next_order
+        }
 
 class Modelo:
     """Modelo de modelos de celulares"""
@@ -165,3 +195,35 @@ class Modelo:
         db.execute_update("UPDATE modelos SET orden = ? WHERE id = ?", (neighbor['orden'], current['id']))
         db.execute_update("UPDATE modelos SET orden = ? WHERE id = ?", (current['orden'], neighbor['id']))
         return True
+
+    @staticmethod
+    def belongs_to_marca(modelo_id, marca_id):
+        """Valida si un modelo pertenece a una marca"""
+        query = "SELECT 1 FROM modelos WHERE id = ? AND marca_id = ?"
+        row = db.execute_single(query, (modelo_id, marca_id))
+        return bool(row)
+
+    @staticmethod
+    def get_or_create_no_lista_defaults():
+        """Asegura IDs por defecto para ingresos sin catálogo definido"""
+        marca = Marca.get_or_create_by_name('OTRO')
+        marca_id = marca['id']
+
+        model_name = 'POR CATALOGAR'
+        existing_model = db.execute_single(
+            "SELECT id, nombre, marca_id, orden FROM modelos WHERE marca_id = ? AND UPPER(TRIM(nombre)) = ?",
+            (marca_id, model_name)
+        )
+
+        if existing_model:
+            modelo = dict(existing_model)
+        else:
+            modelo_id = Modelo.create(marca_id, model_name)
+            modelo = Modelo.get_by_id(modelo_id)
+
+        return {
+            'marca_id': marca_id,
+            'modelo_id': modelo['id'],
+            'marca_nombre': marca['nombre'],
+            'modelo_nombre': modelo['nombre']
+        }

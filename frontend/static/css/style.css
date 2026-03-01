@@ -870,6 +870,21 @@ input[type="file"] {
     white-space: nowrap;
 }
 
+.fallas-total {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.55rem 0.95rem;
+    border-radius: 999px;
+    font-size: 0.96rem;
+    font-weight: 800;
+    min-width: 140px;
+    color: #14532d;
+    background: #dcfce7;
+    border: 1px solid #86efac;
+    white-space: nowrap;
+}
+
 .fallas-list {
     display: flex;
     flex-direction: column;
@@ -1051,6 +1066,13 @@ input[type="file"] {
     .fallas-count {
         grid-column: 1 / -1;
         justify-self: start;
+    }
+
+    .fallas-total {
+        grid-column: 1 / -1;
+        justify-self: start;
+        font-size: 0.9rem;
+        min-width: 130px;
     }
 
     .falla-price {
