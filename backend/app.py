@@ -1,11 +1,16 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-from datetime import timedelta
+from datetime import timedelta, datetime
 from functools import wraps
 import re
 import os
 import sys
+import io
+import csv
+import sqlite3
+import threading
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 from PIL import Image, ImageOps
@@ -20,6 +25,7 @@ from models.falla import Falla, IngresoFalla
 from models.ingreso import Ingreso
 from models.nota import Nota
 from models.config import Configuracion
+from models.database import DB_PATH
 from utils.thermal_printer import generate_ticket_data
 
 load_dotenv()
@@ -76,6 +82,73 @@ def _is_ingreso_entregado(ingreso_id):
     if not ingreso:
         return None
     return str(ingreso.get('estado_ingreso') or '').lower() == 'entregado'
+
+
+def _normalize_cedula(value):
+    return ''.join(ch for ch in str(value or '').upper().strip() if ch.isalnum())
+
+
+def _safe_backup_path(filename):
+    backup_dir = Path(__file__).resolve().parent.parent / 'backups'
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    candidate = (backup_dir / filename).resolve()
+    if backup_dir.resolve() not in candidate.parents:
+        return None
+    return candidate
+
+
+def _create_backup_file():
+    backup_dir = Path(__file__).resolve().parent.parent / 'backups'
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_name = f'celupro_{timestamp}.db'
+    backup_path = backup_dir / backup_name
+
+    source_conn = sqlite3.connect(DB_PATH)
+    backup_conn = sqlite3.connect(str(backup_path))
+    try:
+        source_conn.backup(backup_conn)
+    finally:
+        backup_conn.close()
+        source_conn.close()
+
+    return backup_name, backup_path
+
+
+def _backup_scheduler_loop():
+    """Genera backups automáticos según backup_interval_hours."""
+    while True:
+        try:
+            interval_hours = int(Configuracion.get('backup_interval_hours') or 24)
+            interval_hours = max(1, min(24 * 30, interval_hours))
+
+            backup_dir = Path(__file__).resolve().parent.parent / 'backups'
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            latest_mtime = None
+
+            for path in backup_dir.glob('celupro_*.db'):
+                if not path.is_file():
+                    continue
+                mtime = path.stat().st_mtime
+                if latest_mtime is None or mtime > latest_mtime:
+                    latest_mtime = mtime
+
+            should_create = latest_mtime is None or (time.time() - latest_mtime) >= (interval_hours * 3600)
+            if should_create:
+                _create_backup_file()
+        except Exception:
+            pass
+
+        time.sleep(300)
+
+
+def _start_backup_scheduler():
+    thread = threading.Thread(target=_backup_scheduler_loop, daemon=True, name='backup-scheduler')
+    thread.start()
+
+
+_start_backup_scheduler()
 
 # ===== RUTAS DE AUTENTICACIÓN =====
 @app.route('/api/auth/login', methods=['POST'])
@@ -945,6 +1018,199 @@ def update_configuracion():
         return jsonify({'success': True}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/admin/backups/list', methods=['GET'])
+@role_required('admin')
+def list_backups():
+    """Lista copias de seguridad disponibles"""
+    try:
+        backup_dir = Path(__file__).resolve().parent.parent / 'backups'
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        files = []
+        for path in backup_dir.glob('*'):
+            if not path.is_file():
+                continue
+            files.append({
+                'filename': path.name,
+                'size_bytes': path.stat().st_size,
+                'updated_at': datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+            })
+
+        files.sort(key=lambda item: item['updated_at'], reverse=True)
+        return jsonify({'data': files}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/backups/create', methods=['POST'])
+@role_required('admin')
+def create_backup():
+    """Genera copia de seguridad SQLite en carpeta backups"""
+    try:
+        backup_name, _ = _create_backup_file()
+
+        return jsonify({
+            'success': True,
+            'filename': backup_name,
+            'path': f'/api/admin/backups/download/{backup_name}'
+        }), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/backups/download/<path:filename>', methods=['GET'])
+@role_required('admin')
+def download_backup(filename):
+    """Descarga una copia de seguridad"""
+    backup_file = _safe_backup_path(filename)
+    if not backup_file or not backup_file.exists() or not backup_file.is_file():
+        return jsonify({'error': 'Archivo de backup no encontrado'}), 404
+
+    return send_file(str(backup_file), as_attachment=True, download_name=backup_file.name)
+
+
+@app.route('/api/admin/csv/clientes/export', methods=['GET'])
+@role_required('admin')
+def export_clientes_csv():
+    """Exporta clientes únicos (por cédula) a CSV"""
+    try:
+        from models.database import db as database
+        norm_expr = "REPLACE(REPLACE(REPLACE(UPPER(TRIM(cliente_cedula)), '.', ''), '-', ''), ' ', '')"
+        query = f'''
+        SELECT
+            i.cliente_cedula,
+            i.cliente_nombre,
+            i.cliente_apellido,
+            i.cliente_telefono,
+            i.cliente_direccion,
+            (
+                SELECT COUNT(*)
+                FROM ingresos i3
+                WHERE {norm_expr.replace('cliente_cedula', 'i3.cliente_cedula')} = {norm_expr.replace('cliente_cedula', 'i.cliente_cedula')}
+            ) AS total_ingresos
+        FROM ingresos i
+        WHERE i.id = (
+            SELECT i2.id
+            FROM ingresos i2
+            WHERE {norm_expr.replace('cliente_cedula', 'i2.cliente_cedula')} = {norm_expr.replace('cliente_cedula', 'i.cliente_cedula')}
+            ORDER BY datetime(i2.fecha_ingreso) DESC, i2.id DESC
+            LIMIT 1
+        )
+        ORDER BY datetime(i.fecha_ingreso) DESC, i.id DESC
+        '''
+
+        rows = database.execute_query(query)
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'cliente_cedula',
+            'cliente_nombre',
+            'cliente_apellido',
+            'cliente_telefono',
+            'cliente_direccion',
+            'total_ingresos'
+        ])
+
+        for row in rows:
+            writer.writerow([
+                row['cliente_cedula'] or '',
+                row['cliente_nombre'] or '',
+                row['cliente_apellido'] or '',
+                row['cliente_telefono'] or '',
+                row['cliente_direccion'] or '',
+                row['total_ingresos'] or 0
+            ])
+
+        csv_bytes = io.BytesIO(output.getvalue().encode('utf-8-sig'))
+        output.close()
+
+        filename = f'clientes_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        return send_file(csv_bytes, mimetype='text/csv', as_attachment=True, download_name=filename)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/csv/clientes/import', methods=['POST'])
+@role_required('admin')
+def import_clientes_csv():
+    """Importa clientes desde CSV y actualiza ingresos existentes por cédula"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No se envió archivo CSV'}), 400
+
+    file = request.files['file']
+    if not file or not file.filename:
+        return jsonify({'error': 'Archivo inválido'}), 400
+
+    if not file.filename.lower().endswith('.csv'):
+        return jsonify({'error': 'Solo se permite formato CSV'}), 400
+
+    try:
+        content = file.stream.read().decode('utf-8-sig')
+        reader = csv.DictReader(io.StringIO(content))
+
+        if not reader.fieldnames:
+            return jsonify({'error': 'CSV sin cabeceras'}), 400
+
+        field_map = {name.strip().lower(): name for name in reader.fieldnames}
+        cedula_field = field_map.get('cliente_cedula') or field_map.get('cedula')
+        nombre_field = field_map.get('cliente_nombre') or field_map.get('nombre')
+        apellido_field = field_map.get('cliente_apellido') or field_map.get('apellido')
+        telefono_field = field_map.get('cliente_telefono') or field_map.get('telefono')
+        direccion_field = field_map.get('cliente_direccion') or field_map.get('direccion')
+
+        required = [cedula_field, nombre_field, apellido_field]
+        if not all(required):
+            return jsonify({'error': 'El CSV debe incluir: cliente_cedula, cliente_nombre, cliente_apellido'}), 400
+
+        from models.database import db as database
+        updated_rows = 0
+        skipped_rows = 0
+        no_match_rows = 0
+
+        for row in reader:
+            cedula_norm = _normalize_cedula(row.get(cedula_field, ''))
+            nombre = str(row.get(nombre_field, '') or '').strip().upper()
+            apellido = str(row.get(apellido_field, '') or '').strip().upper()
+            telefono = str(row.get(telefono_field, '') or '').strip().upper() if telefono_field else ''
+            direccion = str(row.get(direccion_field, '') or '').strip().upper() if direccion_field else ''
+
+            if not cedula_norm or not nombre or not apellido:
+                skipped_rows += 1
+                continue
+
+            query = '''
+            UPDATE ingresos
+            SET cliente_nombre = ?,
+                cliente_apellido = ?,
+                cliente_telefono = ?,
+                cliente_direccion = ?
+            WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(cliente_cedula)), '.', ''), '-', ''), ' ', '') = ?
+            '''
+
+            with database.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(query, (nombre, apellido, telefono, direccion, cedula_norm))
+                conn.commit()
+                affected = cursor.rowcount or 0
+
+            if affected > 0:
+                updated_rows += affected
+            else:
+                no_match_rows += 1
+
+        return jsonify({
+            'success': True,
+            'updated_rows': updated_rows,
+            'skipped_rows': skipped_rows,
+            'no_match_rows': no_match_rows
+        }), 200
+    except UnicodeDecodeError:
+        return jsonify({'error': 'No se pudo leer el CSV. Usa codificación UTF-8.'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/configuracion/publica', methods=['GET'])
 @jwt_required()

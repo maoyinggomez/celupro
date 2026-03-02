@@ -2685,6 +2685,11 @@ async function loadAdminPanel() {
                     <i class="fas fa-cog me-2"></i> Configuración
                 </a>
             </li>
+            <li class="nav-item">
+                <a class="nav-link ${adminActiveTab === 'respaldo' ? 'active' : ''}" data-bs-toggle="tab" href="#respaldo">
+                    <i class="fas fa-database me-2"></i> Respaldo
+                </a>
+            </li>
         </ul>
         
         <div class="tab-content">
@@ -2705,6 +2710,9 @@ async function loadAdminPanel() {
             </div>
             <div id="config" class="tab-pane fade ${adminActiveTab === 'config' ? 'show active' : ''}">
                 ${await loadAdminConfig()}
+            </div>
+            <div id="respaldo" class="tab-pane fade ${adminActiveTab === 'respaldo' ? 'show active' : ''}">
+                ${await loadAdminRespaldo()}
             </div>
         </div>
     `;
@@ -3175,6 +3183,250 @@ async function loadAdminFallas() {
             </div>
         </div>
     `;
+}
+
+async function loadAdminRespaldo() {
+    const config = await apiCall('/admin/configuracion');
+    const backupsResponse = await apiCall('/admin/backups/list');
+    const backupInterval = parseInt(config?.backup_interval_hours?.valor || '24', 10) || 24;
+    const backups = Array.isArray(backupsResponse?.data) ? backupsResponse.data : [];
+
+    return `
+        <div class="row g-3">
+            <div class="col-lg-6">
+                <div class="card p-4 h-100">
+                    <h5 class="mb-3">Copias de Seguridad</h5>
+                    <div class="mb-3">
+                        <label class="form-label">Frecuencia sugerida</label>
+                        <select id="backup_interval_hours" class="form-select">
+                            <option value="6" ${backupInterval === 6 ? 'selected' : ''}>Cada 6 horas</option>
+                            <option value="12" ${backupInterval === 12 ? 'selected' : ''}>Cada 12 horas</option>
+                            <option value="24" ${backupInterval === 24 ? 'selected' : ''}>Cada 24 horas</option>
+                            <option value="48" ${backupInterval === 48 ? 'selected' : ''}>Cada 48 horas</option>
+                            <option value="168" ${backupInterval === 168 ? 'selected' : ''}>Cada 7 días</option>
+                        </select>
+                        <small class="text-muted">Este valor se guarda como política recomendada para tu operación.</small>
+                    </div>
+                    <div class="d-flex gap-2 flex-wrap">
+                        <button class="btn btn-primary" onclick="saveBackupSettings()">
+                            <i class="fas fa-save me-2"></i>Guardar frecuencia
+                        </button>
+                        <button class="btn btn-success" onclick="createBackupNow()">
+                            <i class="fas fa-hdd me-2"></i>Generar copia ahora
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div class="card p-4 h-100">
+                    <h5 class="mb-3">CSV de Clientes</h5>
+                    <div class="mb-3">
+                        <button class="btn btn-outline-primary" onclick="exportClientesCsv()">
+                            <i class="fas fa-file-export me-2"></i>Exportar clientes a CSV
+                        </button>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Importar CSV de clientes</label>
+                        <input type="file" id="clientesCsvFile" class="form-control" accept=".csv,text/csv">
+                        <small class="text-muted">Cabeceras: cliente_cedula, cliente_nombre, cliente_apellido, cliente_telefono, cliente_direccion</small>
+                    </div>
+                    <div>
+                        <button class="btn btn-outline-success" onclick="importClientesCsv()">
+                            <i class="fas fa-file-import me-2"></i>Importar CSV
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-12">
+                <div class="card p-4">
+                    <h5 class="mb-3">Historial de Copias</h5>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>Archivo</th>
+                                    <th>Tamaño</th>
+                                    <th>Fecha</th>
+                                    <th width="180">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${backups.length ? backups.map((item) => `
+                                    <tr>
+                                        <td>${item.filename}</td>
+                                        <td>${formatBytes(item.size_bytes)}</td>
+                                        <td>${item.updated_at ? new Date(item.updated_at).toLocaleString('es-CO') : 'N/A'}</td>
+                                        <td>
+                                            <button class="btn btn-sm btn-secondary" onclick="downloadBackupFile('${String(item.filename).replace(/'/g, "\\'")}')">
+                                                <i class="fas fa-download me-1"></i>Descargar
+                                            </button>
+                                        </td>
+                                    </tr>
+                                `).join('') : '<tr><td colspan="4" class="text-center text-muted">Aún no hay copias generadas</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function formatBytes(bytes) {
+    const value = Number(bytes || 0);
+    if (!value) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let index = 0;
+    let size = value;
+    while (size >= 1024 && index < units.length - 1) {
+        size /= 1024;
+        index += 1;
+    }
+    return `${size.toFixed(size >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+async function saveBackupSettings() {
+    const value = document.getElementById('backup_interval_hours')?.value || '24';
+    const response = await apiCall('/admin/configuracion', {
+        method: 'PUT',
+        body: JSON.stringify({
+            backup_interval_hours: value
+        })
+    });
+
+    if (response?.success) {
+        showAlert('Frecuencia de respaldo guardada', 'success');
+    } else {
+        showAlert(response?.error || 'No se pudo guardar la frecuencia', 'danger');
+    }
+}
+
+async function createBackupNow() {
+    const response = await apiCall('/admin/backups/create', {
+        method: 'POST'
+    });
+
+    if (response?.success) {
+        showAlert(`Copia creada: ${response.filename}`, 'success');
+        adminActiveTab = 'respaldo';
+        loadPage('admin');
+    } else {
+        showAlert(response?.error || 'No se pudo generar la copia', 'danger');
+    }
+}
+
+async function downloadBackupFile(filename) {
+    if (!filename) return;
+
+    try {
+        const response = await fetch(`${API_BASE}/admin/backups/download/${encodeURIComponent(filename)}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+
+        if (!response.ok) {
+            let errorText = `Error ${response.status}`;
+            try {
+                const errorJson = await response.json();
+                errorText = errorJson.error || errorText;
+            } catch (_) {
+            }
+            showAlert(errorText, 'danger');
+            return;
+        }
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+    } catch (error) {
+        showAlert(`Error descargando backup: ${error.message}`, 'danger');
+    }
+}
+
+async function exportClientesCsv() {
+    try {
+        const response = await fetch(`${API_BASE}/admin/csv/clientes/export`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+
+        if (!response.ok) {
+            let errorText = `Error ${response.status}`;
+            try {
+                const errorJson = await response.json();
+                errorText = errorJson.error || errorText;
+            } catch (_) {
+            }
+            showAlert(errorText, 'danger');
+            return;
+        }
+
+        const disposition = response.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="?([^";]+)"?/i);
+        const filename = match ? match[1] : `clientes_${Date.now()}.csv`;
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+
+        showAlert('CSV exportado correctamente', 'success');
+    } catch (error) {
+        showAlert(`Error exportando CSV: ${error.message}`, 'danger');
+    }
+}
+
+async function importClientesCsv() {
+    const input = document.getElementById('clientesCsvFile');
+    const file = input?.files?.[0];
+
+    if (!file) {
+        showAlert('Selecciona un archivo CSV para importar', 'warning');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch(`${API_BASE}/admin/csv/clientes/import`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            body: formData
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            showAlert(payload?.error || `Error ${response.status} al importar CSV`, 'danger');
+            return;
+        }
+
+        showAlert(
+            `Importación completada. Actualizados: ${payload.updated_rows || 0}, sin coincidencia: ${payload.no_match_rows || 0}, omitidos: ${payload.skipped_rows || 0}`,
+            'success'
+        );
+    } catch (error) {
+        showAlert(`Error importando CSV: ${error.message}`, 'danger');
+    }
 }
 
 async function loadAdminConfig() {

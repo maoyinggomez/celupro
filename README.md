@@ -90,11 +90,12 @@ celupro-clone/
 │   │   ├── marca.py
 │   │   ├── falla.py
 │   │   ├── ingreso.py
-│   │   └── nota.py
-│   ├── routes/                # Rutas de API
+│   │   ├── nota.py
+│   │   ├── config.py
+│   │   └── database.py
 │   ├── utils/                 # Utilidades (impresora térmica)
 │   ├── requirements.txt       # Dependencias
-│   └── database.py            # Configuración BD
+│   └── .env.example           # Variables de entorno de ejemplo
 ├── frontend/                  # Interfaz web
 │   ├── server.py              # Servidor Flask (puerto 3000)
 │   ├── templates/
@@ -108,8 +109,10 @@ celupro-clone/
 │   ├── init_db.py
 │   ├── celupro.db             # SQLite (se crea automático)
 │   └── SCHEMA.sql
+├── scripts/                   # Scripts auxiliares
+│   ├── maintenance/           # Utilidades manuales de config/soporte
+│   └── manual_tests/          # Pruebas manuales por API
 ├── .venv/                     # Entorno virtual Python
-├── pyproject.toml             # Configuración del proyecto
 ├── uv.lock                    # Lock de dependencias
 └── README.md                  # Este archivo
 ```
@@ -150,6 +153,23 @@ python3 server.py
 - **Este README** - Guía completa del proyecto
 - **backend/requirements.txt** - Dependencias instaladas
 - **database/SCHEMA.sql** - Estructura de la base de datos
+
+## 🧰 Scripts auxiliares
+
+Desde la raíz del proyecto (`celupro-clone/`):
+
+```bash
+# Mantenimiento
+python3 scripts/maintenance/check_config.py
+python3 scripts/maintenance/debug_config.py
+python3 scripts/maintenance/reset_config.py
+
+# Pruebas manuales por API
+python3 scripts/manual_tests/test_simple.py
+python3 scripts/manual_tests/test_config_get.py
+python3 scripts/manual_tests/test_full_flow.py
+python3 scripts/manual_tests/test_ticket_config.py
+```
 
 ## 🗺️ Flujos principales
 
