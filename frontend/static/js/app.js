@@ -3183,6 +3183,16 @@ async function loadAdminConfig() {
     const logoNavbarActual = config.logo_navbar_url?.valor || config.logo_url?.valor;
     const logoTicketActual = config.logo_ticket_url?.valor || config.logo_url?.valor;
     const tecnicoDefaultId = parseInt(config.tecnico_default_id?.valor || '', 10) || null;
+    const paperWidth = parseInt(config.ancho_papel_mm?.valor || '58', 10) || 58;
+    const paperHeight = parseInt(config.largo_papel_mm?.valor || '300', 10) || 300;
+    const paperMargin = parseInt(config.margen_papel_mm?.valor || '0', 10) || 0;
+    const ticketEncabezado = config.ticket_encabezado?.valor || '';
+    const ticketComentarios = config.ticket_comentarios?.valor || '';
+    const escapeHtml = (value) => String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
     
     return `
         <div class="card p-4">
@@ -3237,6 +3247,34 @@ async function loadAdminConfig() {
                     <label class="form-label">Logo para Ticket (impresión) (PNG o JPG, máx 5MB)</label>
                     <input type="file" class="form-control" id="logo_ticket_file" accept="image/png,image/jpeg,image/jpg">
                     ${logoTicketActual ? `<div class="mt-2"><small class="text-muted">Logo ticket actual:</small><br><img src="${logoTicketActual}" alt="Logo ticket actual" style="max-height: 80px; max-width: 260px; border: 1px solid #ddd; padding: 4px; border-radius: 4px; margin-top: 5px;"></div>` : '<small class="text-muted d-block mt-1">No hay logo de ticket cargado aún</small>'}
+                </div>
+
+                <hr>
+                <h6 class="mb-3">Configuración de Papel (Ticket)</h6>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Ancho (mm)</label>
+                        <input type="number" class="form-control" id="ancho_papel_mm" min="48" max="80" step="1" value="${paperWidth}">
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Largo (mm)</label>
+                        <input type="number" class="form-control" id="largo_papel_mm" min="120" max="1000" step="10" value="${paperHeight}">
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label">Márgenes (mm)</label>
+                        <input type="number" class="form-control" id="margen_papel_mm" min="0" max="5" step="1" value="${paperMargin}">
+                    </div>
+                </div>
+
+                <hr>
+                <h6 class="mb-3">Contenido del Ticket</h6>
+                <div class="mb-3">
+                    <label class="form-label">Encabezado adicional (una línea por renglón)</label>
+                    <textarea class="form-control" id="ticket_encabezado" rows="3" placeholder="Ej: SERVICIO TÉCNICO ESPECIALIZADO&#10;LUN A SAB 8AM - 7PM">${escapeHtml(ticketEncabezado)}</textarea>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Comentarios del ticket (una línea por renglón)</label>
+                    <textarea class="form-control" id="ticket_comentarios" rows="5" placeholder="Términos y condiciones del ticket">${escapeHtml(ticketComentarios)}</textarea>
                 </div>
                 
                 <button type="submit" class="btn btn-primary">
@@ -3346,7 +3384,12 @@ async function submitConfig(e) {
                 telefono_negocio: document.getElementById('telefono_negocio').value,
                 direccion_negocio: document.getElementById('direccion_negocio').value,
                 email_negocio: document.getElementById('email_negocio').value,
-                tecnico_default_id: document.getElementById('tecnico_default_id')?.value || ''
+                tecnico_default_id: document.getElementById('tecnico_default_id')?.value || '',
+                ancho_papel_mm: document.getElementById('ancho_papel_mm')?.value || '58',
+                largo_papel_mm: document.getElementById('largo_papel_mm')?.value || '300',
+                margen_papel_mm: document.getElementById('margen_papel_mm')?.value || '0',
+                ticket_encabezado: document.getElementById('ticket_encabezado')?.value || '',
+                ticket_comentarios: document.getElementById('ticket_comentarios')?.value || ''
             })
         });
         
@@ -4020,40 +4063,87 @@ function simulatePrint(ticketData) {
     const fallasTexto = fallas.length
         ? fallas.map(f => `• ${cleanFallaName(f.nombre) || 'Falla'}`).join('<br>')
         : clean(ingreso.falla_general);
+    const parseMm = (value, fallback) => {
+        const num = Number(value);
+        return Number.isFinite(num) ? Math.round(num) : fallback;
+    };
+    const paperWidthMm = Math.min(80, Math.max(48, parseMm(ticketData.paper_width_mm, 58)));
+    const paperHeightMm = Math.min(1000, Math.max(120, parseMm(ticketData.paper_height_mm, 300)));
+    const pageMarginMm = Math.min(5, Math.max(0, parseMm(ticketData.paper_margin_mm, 0)));
+    const pageContentWidthMm = Math.max(20, paperWidthMm - (pageMarginMm * 2));
+    const paperMaxWidthPx = Math.round((pageContentWidthMm / 25.4) * 96);
+    const baseFontSizePx = paperWidthMm >= 76 ? 14 : 13;
+    const smallFontSizePx = Math.max(11, baseFontSizePx - 1);
+    const headerFontSizePx = baseFontSizePx + 4;
+    const numeroFontSizePx = baseFontSizePx + 8;
+    const lineHeight = 1.28;
+    const defaultComentarios = [
+        'PANTALLAS NO TIENEN GARANTIA YA QUE ES UN CRISTAL Y DEPENDE DEL CUIDADOS DEL CLIENTE.',
+        'LA CONTRASEÑA SE SOLICITA PARA HACER REVISION DE SU TELEFONO Y ASI GARANTIZAR QUE SU FUNCIONAMIENTO QUEDÓ EN OPTIMAS CONDICIONES.',
+        'PASADOS 60 DIAS NO SE RESPONDE POR EQUIPOS ABANDONADOS.'
+    ];
+    const splitLines = (value) => String(value || '')
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean);
+    const ticketEncabezadoLines = splitLines(negocio.ticket_encabezado);
+    const ticketComentariosLines = splitLines(negocio.ticket_comentarios);
+    const comentariosFinales = ticketComentariosLines.length ? ticketComentariosLines : defaultComentarios;
+    const escapeHtml = (value) => String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
 
     const html = `
         <html>
         <head>
             <title>Ticket de Impresión - ${ticketData.numero_ingreso}</title>
             <style>
+                @page {
+                    size: ${paperWidthMm}mm ${paperHeightMm}mm;
+                    margin: ${pageMarginMm}mm;
+                }
+
+                html {
+                    width: ${pageContentWidthMm}mm;
+                    min-height: ${paperHeightMm}mm;
+                    margin: 0;
+                    padding: 0;
+                }
+
                 body {
                     font-family: monospace;
                     margin: 0;
-                    padding: 10px;
-                    width: 58mm;
-                    max-width: 250px;
-                    font-size: 12px;
+                    padding: 0;
+                    width: ${pageContentWidthMm}mm;
+                    min-height: ${paperHeightMm}mm;
+                    max-width: ${paperMaxWidthPx}px;
+                    font-size: ${baseFontSizePx}px;
+                    line-height: ${lineHeight};
+                    -webkit-print-color-adjust: exact;
+                    print-color-adjust: exact;
                 }
                 .ticket {
-                    border: 1px dashed #ccc;
-                    padding: 10px;
+                    border: 0;
+                    padding: 12px 10px;
                     text-align: left;
                 }
                 .header {
                     text-align: center;
                     font-weight: bold;
+                    font-size: ${headerFontSizePx}px;
                     margin-bottom: 10px;
                 }
                 .logo {
                     text-align: center;
-                    margin-bottom: 6px;
+                    margin-bottom: 8px;
                 }
                 .logo img {
-                    max-width: 160px;
-                    max-height: 70px;
+                    max-width: ${Math.max(150, paperMaxWidthPx - 30)}px;
+                    max-height: ${paperWidthMm >= 76 ? 90 : 80}px;
                 }
                 .numero {
-                    font-size: 18px;
+                    font-size: ${numeroFontSizePx}px;
                     font-weight: bold;
                     margin: 10px 0;
                     text-align: center;
@@ -4071,7 +4161,24 @@ function simulatePrint(ticketData) {
                     text-align: center;
                 }
                 .small {
-                    font-size: 10px;
+                    font-size: ${smallFontSizePx}px;
+                }
+                    
+
+                @media print {
+                    html,
+                    body {
+                        width: ${paperWidthMm}mm !important;
+                        min-height: ${paperHeightMm}mm !important;
+                        max-width: ${paperWidthMm}mm !important;
+                        margin: ${pageMarginMm}mm !important;
+                        padding: 0 !important;
+                    }
+
+                    .ticket {
+                        border: 0 !important;
+                        margin: 0 !important;
+                    }
                 }
             </style>
         </head>
@@ -4081,6 +4188,7 @@ function simulatePrint(ticketData) {
                 <div class="header">${nombreNegocio}</div>
                 ${telefonoNegocio ? `<div class="center small">Tel: ${telefonoNegocio}</div>` : ''}
                 ${direccionNegocio ? `<div class="center small">${direccionNegocio}</div>` : ''}
+                ${ticketEncabezadoLines.length ? `<div class="center small">${ticketEncabezadoLines.map((line) => escapeHtml(line)).join('<br>')}</div>` : ''}
                 <div class="numero">Ingreso #${ticketData.numero_ingreso}</div>
 
                 <div class="section-title">CLIENTE</div>
@@ -4106,9 +4214,7 @@ function simulatePrint(ticketData) {
                 <div class="section-title">Fallas seleccionadas</div>
                 <div class="small">${fallasTexto}</div>
                 <div class="section-title">Comentarios</div>
-                <div class="small"><strong>PANTALLAS NO TIENEN GARANTIA YA QUE ES UN CRISTAL Y DEPENDE DEL CUIDADOS DEL CLIENTE.</strong></div>
-                <div class="small"><strong>LA CONTRASEÑA SE SOLICITA PARA HACER REVISION DE SU TELEFONO Y ASI GARANTIZAR QUE SU FUNCIONAMIENTO QUEDÓ EN OPTIMAS CONDICIONES.</strong></div>
-                <div class="small"><strong>PASADOS 60 DIAS NO SE RESPONDE POR EQUIPOS ABANDONADOS.</strong></div>
+                ${comentariosFinales.map((line) => `<div class="small"><strong>${escapeHtml(line)}</strong></div>`).join('')}
 
                 <div class="line"></div>
                 <div class="line"></div>
@@ -4147,8 +4253,9 @@ function simulatePrint(ticketData) {
     iframe.style.position = 'fixed';
     iframe.style.right = '0';
     iframe.style.bottom = '0';
-    iframe.style.width = '0';
-    iframe.style.height = '0';
+    iframe.style.width = `${paperWidthMm}mm`;
+    iframe.style.height = '1px';
+    iframe.style.opacity = '0';
     iframe.style.border = '0';
     iframe.setAttribute('aria-hidden', 'true');
     document.body.appendChild(iframe);

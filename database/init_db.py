@@ -293,7 +293,11 @@ def insert_default_data(cursor, conn):
         ('email_negocio', 'info@celupro.com', 'text'),
         ('tecnico_default_id', '', 'number'),
         ('logo_url', '', 'file'),
-        ('ancho_papel_mm', '58', 'number')
+        ('ancho_papel_mm', '58', 'number'),
+        ('largo_papel_mm', '300', 'number'),
+        ('margen_papel_mm', '0', 'number'),
+        ('ticket_encabezado', '', 'text'),
+        ('ticket_comentarios', 'PANTALLAS NO TIENEN GARANTIA YA QUE ES UN CRISTAL Y DEPENDE DEL CUIDADOS DEL CLIENTE.\nLA CONTRASEÑA SE SOLICITA PARA HACER REVISION DE SU TELEFONO Y ASI GARANTIZAR QUE SU FUNCIONAMIENTO QUEDÓ EN OPTIMAS CONDICIONES.\nPASADOS 60 DIAS NO SE RESPONDE POR EQUIPOS ABANDONADOS.', 'text')
     ]
     
     for clave, valor, tipo in configuraciones:
@@ -403,7 +407,11 @@ def ensure_default_config(cursor, conn):
         ('email_negocio', 'info@celupro.com', 'text'),
         ('tecnico_default_id', '', 'number'),
         ('logo_url', '', 'file'),
-        ('ancho_papel_mm', '58', 'number')
+        ('ancho_papel_mm', '58', 'number'),
+        ('largo_papel_mm', '300', 'number'),
+        ('margen_papel_mm', '0', 'number'),
+        ('ticket_encabezado', '', 'text'),
+        ('ticket_comentarios', 'PANTALLAS NO TIENEN GARANTIA YA QUE ES UN CRISTAL Y DEPENDE DEL CUIDADOS DEL CLIENTE.\nLA CONTRASEÑA SE SOLICITA PARA HACER REVISION DE SU TELEFONO Y ASI GARANTIZAR QUE SU FUNCIONAMIENTO QUEDÓ EN OPTIMAS CONDICIONES.\nPASADOS 60 DIAS NO SE RESPONDE POR EQUIPOS ABANDONADOS.', 'text')
     ]
 
     for clave, valor, tipo in configuraciones:

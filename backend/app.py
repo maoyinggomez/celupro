@@ -1109,7 +1109,9 @@ def get_ticket_data(ingreso_id):
             'cliente': f"{ingreso['cliente_nombre']} {ingreso['cliente_apellido']}",
             'ingreso': ingreso_dict,
             'negocio': datos_negocio,
-            'paper_width_mm': int(Configuracion.get('ancho_papel_mm') or 58)
+            'paper_width_mm': int(Configuracion.get('ancho_papel_mm') or 58),
+            'paper_height_mm': int(Configuracion.get('largo_papel_mm') or 300),
+            'paper_margin_mm': int(Configuracion.get('margen_papel_mm') or 0)
         }), 200
     
     except Exception as e:
