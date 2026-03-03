@@ -3,8 +3,64 @@ let currentPage = null;
 let isSubmittingIngreso = false;
 const printingIngresos = new Set();
 let adminActiveTab = 'usuarios';
+let browserPrintBridgeTimer = null;
+let browserPrintBridgeActive = false;
+let browserPrintBridgeBusy = false;
+let browserPrintBridgeWorkerName = null;
+let autoPrinterBootstrapRunning = false;
+let adminPrintStatusTimer = null;
 let clientesBusquedaActual = [];
 let clienteBusquedaIndiceActivo = -1;
+let dashboardChartYear = new Date().getFullYear();
+let autoLightingTimer = null;
+let quickEntregaCache = [];
+
+function getAmbientDarkness() {
+    const now = new Date();
+    const hour = now.getHours() + (now.getMinutes() / 60);
+
+    // Día (06:00-17:30) claro, transición al anochecer, noche oscura,
+    // transición al amanecer para volver a claro.
+    if (hour >= 6 && hour < 17.5) return 0;
+    if (hour >= 17.5 && hour < 21) {
+        return ((hour - 17.5) / 3.5) * 0.24;
+    }
+    if (hour >= 21 || hour < 5) return 0.24;
+    if (hour >= 5 && hour < 6) {
+        return ((6 - hour) / 1) * 0.24;
+    }
+    return 0;
+}
+
+function applyTimeBasedAmbientLight() {
+    const body = document.body;
+    if (!body || body.classList.contains('login-page')) return;
+
+    const darkness = Math.max(0, Math.min(0.28, getAmbientDarkness()));
+    body.style.setProperty('--time-darkness', darkness.toFixed(3));
+    body.classList.toggle('auto-time-dim', darkness > 0.005);
+}
+
+function startAutoAmbientLight() {
+    applyTimeBasedAmbientLight();
+
+    if (autoLightingTimer) {
+        clearInterval(autoLightingTimer);
+    }
+
+    autoLightingTimer = setInterval(applyTimeBasedAmbientLight, 60 * 1000);
+
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) applyTimeBasedAmbientLight();
+    });
+}
+
+function applyAdaptiveDensity() {
+    const w = window.innerWidth || document.documentElement.clientWidth || 0;
+    const h = window.innerHeight || document.documentElement.clientHeight || 0;
+    const isLaptopCompact = w >= 992 && w <= 1500 && h <= 930;
+    document.body.classList.toggle('compact-density', isLaptopCompact);
+}
 
 function getCurrentUserSafe() {
     try {
@@ -58,18 +114,25 @@ window.addEventListener('unhandledrejection', function(event) {
 
 function initApp() {
     console.log('initApp() called');
+    applyAdaptiveDensity();
+    startAutoAmbientLight();
+    ensureQuickEntregaButton();
 
     const user = getCurrentUserSafe();
     if (user) {
         setCurrentUserSafe(user);
     }
     
-    // Configurar event listener global para el formulario de configuración
-    // Usa delegación de eventos para que funcione con contenido dinámico
     document.addEventListener('submit', function(e) {
         if (e.target && e.target.id === 'configForm') {
             e.preventDefault();
             submitConfig(e);
+            return;
+        }
+
+        if (e.target && e.target.id === 'configPrintForm') {
+            e.preventDefault();
+            submitPrintConfig(e);
         }
     }, true);
     
@@ -80,11 +143,95 @@ function initApp() {
         loadNavbarBrand();
         
         loadPage(startPage);
+        // Removed auto-bootstrap to avoid URL-based complexity
+        // Use admin button "Usar este navegador como impresora" instead
+        // setTimeout(() => {
+        //     bootstrapAutoPrinterMode();
+        // }, 250);
     } else {
         console.log('No user found, redirecting to login');
         window.location.href = '/';
     }
 }
+
+function isAutoPrinterModeRequested() {
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        const printerMode = String(params.get('printer_mode') || '').trim().toLowerCase();
+        const requested = printerMode === '1' || printerMode === 'true' || printerMode === 'on';
+        if (requested) {
+            localStorage.setItem('celupro_auto_printer_mode', '1');
+            return true;
+        }
+        return localStorage.getItem('celupro_auto_printer_mode') === '1';
+    } catch (_) {
+        return false;
+    }
+}
+
+async function bootstrapAutoPrinterMode() {
+    if (!isAutoPrinterModeRequested() || autoPrinterBootstrapRunning) return;
+
+    const user = getCurrentUserSafe();
+    if (!user || user.rol !== 'admin') return;
+
+    autoPrinterBootstrapRunning = true;
+    const workerName = getBrowserWorkerName();
+
+    try {
+        await apiCall('/admin/configuracion', {
+            method: 'PUT',
+            body: JSON.stringify({
+                print_dispatch_mode: 'queue_auto',
+                print_target_printer: workerName,
+                print_backend_auto_enabled: 'false'
+            })
+        });
+    } catch (_) {
+    }
+
+    startBrowserPrintBridge({
+        silent: true,
+        workerName
+    });
+
+    autoPrinterBootstrapRunning = false;
+}
+
+async function activateThisBrowserAsPrinter() {
+    const user = getCurrentUserSafe();
+    if (!user || user.rol !== 'admin') {
+        showAlert('Solo admin puede activar este navegador como impresora', 'warning');
+        return;
+    }
+
+    const workerName = getBrowserWorkerName();
+
+    try {
+        const response = await apiCall('/admin/configuracion', {
+            method: 'PUT',
+            body: JSON.stringify({
+                print_dispatch_mode: 'queue_auto',
+                print_target_printer: workerName,
+                print_backend_auto_enabled: 'false'
+            })
+        });
+
+        if (response?.success) {
+            showAlert(`✓ Este navegador es ahora la impresora local: ${workerName}`, 'success');
+            startBrowserPrintBridge({ silent: false, workerName });
+            setTimeout(() => {
+                refreshAdminPrintStatusNow();
+            }, 500);
+        } else {
+            showAlert('Error al guardar configuración', 'danger');
+        }
+    } catch (error) {
+        showAlert('Error: ' + error.message, 'danger');
+    }
+}
+
+window.addEventListener('resize', applyAdaptiveDensity);
 
 async function loadNavbarBrand() {
     const brandEl = document.getElementById('navbarBrand');
@@ -138,11 +285,9 @@ async function loadNavbarBrand() {
         brandImgEl.src = candidates[index];
     };
 
-    // Mostrar logo navbar por defecto
     setBrandLogo('/static/logos/logo.png', 'Logo');
 
     try {
-        // Primero intentar con configuración admin (estable y ya existente)
         const adminConfig = await apiCall('/admin/configuracion');
         if (adminConfig && !adminConfig.error) {
             const logoUrl = adminConfig.logo_navbar_url?.valor || adminConfig.logo_url?.valor;
@@ -153,7 +298,6 @@ async function loadNavbarBrand() {
             }
         }
 
-        // Fallback: endpoint público si existe
         const branding = await apiCall('/configuracion/publica');
         if (branding && !branding.error && (branding.logo_navbar_url || branding.logo_url)) {
             const nombreNegocio = (branding.nombre_negocio || 'Logo').trim() || 'Logo';
@@ -247,6 +391,10 @@ async function loadPage(page) {
     const user = getCurrentUserSafe();
     const previousPage = currentPage;
 
+    if (page !== 'admin') {
+        stopAdminPrintStatusAutoRefresh();
+    }
+
     if (page === 'admin' && previousPage !== 'admin') {
         adminActiveTab = 'usuarios';
     }
@@ -307,20 +455,20 @@ async function loadPage(page) {
     
     console.log(`Setting mainContent for page: ${page}`);
     mainContent.innerHTML = content;
+    ensureQuickEntregaButton();
     
     // Agregar listeners después de cargar el contenido
     try {
         if (page === 'dashboard') {
-            // Inicializar el dashboard con gráficos
             setTimeout(async () => {
                 try {
-                    const response = await apiCall('/ingresos?limit=1000');
-                    if (response && response.data) {
-                        window.allIngresos = response.data;
-                        const monthlyData = calculateMonthlyBalance(response.data);
-                        crearGraficoBalance(monthlyData);
-                        actualizarMetricas(response.data);
+                    if (!window.allIngresos || !Array.isArray(window.allIngresos)) {
+                        const response = await apiCall('/ingresos?limit=1000');
+                        if (response && response.data) {
+                            window.allIngresos = response.data;
+                        }
                     }
+                    hydrateDashboard(window.allIngresos || []);
                 } catch (error) {
                     console.error('Error initializing dashboard:', error);
                 }
@@ -448,9 +596,18 @@ async function loadPage(page) {
                     const href = event.target.getAttribute('href');
                     if (href && href.startsWith('#')) {
                         adminActiveTab = href.substring(1);
+                        if (adminActiveTab === 'impresion') {
+                            startAdminPrintStatusAutoRefresh();
+                        } else {
+                            stopAdminPrintStatusAutoRefresh();
+                        }
                     }
                 });
             });
+
+            if (adminActiveTab === 'impresion') {
+                startAdminPrintStatusAutoRefresh();
+            }
         } else if (page === 'registros') {
             const searchInput = document.getElementById('searchInput');
             if (searchInput) {
@@ -471,139 +628,690 @@ async function loadPage(page) {
     }
 }
 
-async function loadDashboard() {
-    // Obtener todos los ingresos
+function stopAdminPrintStatusAutoRefresh() {
+    if (adminPrintStatusTimer) {
+        clearInterval(adminPrintStatusTimer);
+        adminPrintStatusTimer = null;
+    }
+}
+
+function buildPrintStatusBannerHtml(onlineLocalAgents = []) {
+    if (onlineLocalAgents.length > 0) {
+        const worker = onlineLocalAgents[0] || {};
+        const workerName = worker.worker_name || 'IMPRESORA LOCAL';
+        return `<div class="alert alert-success border-2 mb-3" style="font-size:1.05rem;"><strong>🟢 IMPRESORA LOCAL CONECTADA</strong><div class="small mt-1">Activa: ${workerName}</div></div>`;
+    }
+    return '<div class="alert alert-secondary border-2 mb-3" style="font-size:1.05rem;"><strong>⚪ IMPRESORA LOCAL EN ESPERA</strong><div class="small mt-1">Abre la URL del modo impresora en el PC del local para conectarla.</div></div>';
+}
+
+function buildPrintNoAgentWarningHtml(onlineLocalAgents = []) {
+    return '';
+}
+
+function getOnlinePrintWorkers(workers = []) {
+    return (Array.isArray(workers) ? workers : []).filter((worker) => !!worker?.online);
+}
+
+async function refreshAdminPrintStatusNow() {
+    if (currentPage !== 'admin' || adminActiveTab !== 'impresion') return;
+
+    const bannerWrap = document.getElementById('printConnectionStatusWrap');
+    const warningWrap = document.getElementById('printNoAgentWarningWrap');
+    if (!bannerWrap && !warningWrap) return;
+
+    try {
+        const workersResponse = await apiCall('/print-workers');
+        const workers = Array.isArray(workersResponse?.workers) ? workersResponse.workers : [];
+        const onlineLocalAgents = getOnlinePrintWorkers(workers);
+
+        if (bannerWrap) {
+            bannerWrap.innerHTML = buildPrintStatusBannerHtml(onlineLocalAgents);
+        }
+        if (warningWrap) {
+            warningWrap.innerHTML = buildPrintNoAgentWarningHtml(onlineLocalAgents);
+        }
+    } catch (_) {
+    }
+}
+
+function startAdminPrintStatusAutoRefresh() {
+    stopAdminPrintStatusAutoRefresh();
+    refreshAdminPrintStatusNow();
+    adminPrintStatusTimer = setInterval(refreshAdminPrintStatusNow, 5000);
+}
+
+function shouldShowQuickEntregaButton() {
+    const user = getCurrentUserSafe();
+    return !!(user && (user.rol === 'admin' || user.rol === 'empleado'));
+}
+
+function ensureQuickEntregaButton() {
+    const existing = document.getElementById('quickEntregaFab');
+
+    if (!shouldShowQuickEntregaButton()) {
+        if (existing) existing.remove();
+        return;
+    }
+
+    if (existing) return;
+
+    const button = document.createElement('button');
+    button.id = 'quickEntregaFab';
+    button.className = 'quick-entrega-fab';
+    button.type = 'button';
+    button.innerHTML = `
+        <span class="quick-entrega-fab-icon"><i class="fas fa-box-open"></i></span>
+        <span class="quick-entrega-fab-text">Registrar Pago</span>
+    `;
+    button.title = 'Registrar pago rápido';
+    button.addEventListener('click', openQuickEntregaModal);
+    document.body.appendChild(button);
+}
+
+async function loadQuickEntregaIngresos() {
     const response = await apiCall('/ingresos?limit=1000');
-    
+    if (!response || response.error || !Array.isArray(response.data)) {
+        return [];
+    }
+
+    // Mostrar todos los ingresos aún no entregados/cancelados para facilitar búsqueda y registro rápido.
+    return response.data
+        .filter((ing) => {
+            const estado = String(ing.estado_ingreso || '').toLowerCase();
+            return estado !== 'entregado' && estado !== 'cancelado';
+        })
+        .sort((a, b) => {
+            const aDate = new Date(a.fecha_ingreso || 0).getTime();
+            const bDate = new Date(b.fecha_ingreso || 0).getTime();
+            return bDate - aDate;
+        });
+}
+
+function renderQuickEntregaOptions(ingresos, query, selectedId = null) {
+    const select = document.getElementById('quickEntregaIngresoSelect');
+    if (!select) return;
+
+    const q = String(query || '').toLowerCase().trim();
+    const filtered = q
+        ? ingresos.filter((ing) => {
+            const estado = String(ing.estado_ingreso || '').replace(/_/g, ' ');
+            const text = `${ing.numero_ingreso || ''} ${ing.cliente_nombre || ''} ${ing.cliente_apellido || ''} ${ing.cliente_cedula || ''} ${ing.cliente_telefono || ''} ${estado}`.toLowerCase();
+            return text.includes(q);
+        })
+        : ingresos;
+
+    const emptyRow = '<option value="" disabled>No se encontraron ingresos con ese criterio</option>';
+    select.innerHTML = `
+        <option value="">Selecciona ingreso para entregar...</option>
+        ${filtered.length ? filtered.map((ing) => {
+            const cliente = `${ing.cliente_nombre || ''} ${ing.cliente_apellido || ''}`.trim();
+            const valor = Number(ing.valor_total || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+            const estado = String(ing.estado_ingreso || '').replace(/_/g, ' ');
+            return `<option value="${ing.id}">#${ing.numero_ingreso || ing.id} · ${cliente} · ${estado} · $${valor}</option>`;
+        }).join('') : emptyRow}
+    `;
+
+    if (selectedId) {
+        select.value = String(selectedId);
+    }
+}
+
+function renderQuickEntregaSearchSuggestions(ingresos, query) {
+    const results = document.getElementById('quickEntregaSearchResults');
+    if (!results) return;
+
+    const q = String(query || '').toLowerCase().trim();
+    if (!q) {
+        results.innerHTML = '';
+        return;
+    }
+
+    const filtered = q
+        ? ingresos.filter((ing) => {
+            const estado = String(ing.estado_ingreso || '').replace(/_/g, ' ');
+            const text = `${ing.numero_ingreso || ''} ${ing.cliente_nombre || ''} ${ing.cliente_apellido || ''} ${ing.cliente_cedula || ''} ${ing.cliente_telefono || ''} ${estado}`.toLowerCase();
+            return text.includes(q);
+        })
+        : [];
+
+    const escapeText = (value) => String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+    if (!filtered.length) {
+        results.innerHTML = '<div class="list-group-item text-muted">Sin resultados</div>';
+        return;
+    }
+
+    results.innerHTML = filtered.slice(0, 30).map((ing) => {
+        const cliente = `${ing.cliente_nombre || ''} ${ing.cliente_apellido || ''}`.trim();
+        const estado = String(ing.estado_ingreso || '').replace(/_/g, ' ');
+        const valor = Number(ing.valor_total || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+        return `
+            <button type="button" class="list-group-item list-group-item-action" data-ingreso-id="${ing.id}">
+                <strong>#${escapeText(ing.numero_ingreso || ing.id)}</strong> · ${escapeText(cliente)}<br>
+                <small class="text-muted">${escapeText(estado)} · CC ${escapeText(ing.cliente_cedula || 'N/A')} · $${escapeText(valor)}</small>
+            </button>
+        `;
+    }).join('');
+}
+
+function updateQuickEntregaSelectedInfo() {
+    const select = document.getElementById('quickEntregaIngresoSelect');
+    const clienteInput = document.getElementById('quickEntregaCliente');
+    const valorInput = document.getElementById('quickEntregaValor');
+    if (!select || !clienteInput || !valorInput) return;
+
+    const ingresoId = Number(select.value || 0);
+    const ingreso = quickEntregaCache.find((item) => Number(item.id) === ingresoId);
+    if (!ingreso) {
+        clienteInput.value = '';
+        valorInput.value = '';
+        return;
+    }
+
+    clienteInput.value = `${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}`.trim();
+    valorInput.value = `$ ${Number(ingreso.valor_total || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })}`;
+    updateQuickEntregaCashSummary();
+}
+
+function toggleQuickEntregaCashFields() {
+    const tipoPago = String(document.getElementById('quickEntregaTipoPago')?.value || '').trim().toLowerCase();
+    const cashWrap = document.getElementById('quickEntregaCashWrap');
+    if (!cashWrap) return;
+
+    const showCash = tipoPago === 'efectivo';
+    cashWrap.style.display = showCash ? '' : 'none';
+    updateQuickEntregaCashSummary();
+}
+
+function updateQuickEntregaCashSummary() {
+    const select = document.getElementById('quickEntregaIngresoSelect');
+    const recibidoInput = document.getElementById('quickEntregaMontoRecibido');
+    const devueltaInput = document.getElementById('quickEntregaDevuelta');
+    const faltaInput = document.getElementById('quickEntregaFaltante');
+    const tipoPago = String(document.getElementById('quickEntregaTipoPago')?.value || '').trim().toLowerCase();
+
+    if (!select || !recibidoInput || !devueltaInput || !faltaInput) return;
+
+    const ingresoId = Number(select.value || 0);
+    const ingreso = quickEntregaCache.find((item) => Number(item.id) === ingresoId);
+    const valorCobrar = Number(ingreso?.valor_total || 0);
+    const montoRecibido = Number(parseMonetaryValue(recibidoInput.value || '0') || 0);
+
+    if (tipoPago !== 'efectivo' || !ingresoId) {
+        devueltaInput.value = '$ 0';
+        faltaInput.value = '$ 0';
+        return;
+    }
+
+    const devuelta = Math.max(0, montoRecibido - valorCobrar);
+    const faltante = Math.max(0, valorCobrar - montoRecibido);
+
+    devueltaInput.value = `$ ${devuelta.toLocaleString('es-CO', { maximumFractionDigits: 0 })}`;
+    faltaInput.value = `$ ${faltante.toLocaleString('es-CO', { maximumFractionDigits: 0 })}`;
+}
+
+function toggleQuickEntregaReceiverFields() {
+    const pagoAnticipado = !!document.getElementById('quickEntregaPagoAnticipado')?.checked;
+    const tipoEntrega = String(document.getElementById('quickEntregaReceptorTipo')?.value || 'propietario').trim().toLowerCase();
+    const receiverWrap = document.getElementById('quickEntregaReceiverWrap');
+    const terceroWrap = document.getElementById('quickEntregaTerceroWrap');
+    if (receiverWrap) {
+        receiverWrap.style.display = pagoAnticipado ? 'none' : '';
+    }
+    if (!terceroWrap) return;
+    if (pagoAnticipado) {
+        terceroWrap.style.display = 'none';
+        return;
+    }
+    terceroWrap.style.display = tipoEntrega === 'tercero' ? '' : 'none';
+}
+
+function updateQuickEntregaActionMode() {
+    const pagoAnticipado = !!document.getElementById('quickEntregaPagoAnticipado')?.checked;
+    const confirmBtn = document.getElementById('quickEntregaConfirmBtn');
+    if (confirmBtn) {
+        confirmBtn.innerHTML = pagoAnticipado
+            ? '<i class="fas fa-cash-register me-2"></i>Registrar pago e imprimir ticket'
+            : '<i class="fas fa-check me-2"></i>Registrar pago y entrega e imprimir ticket';
+    }
+    toggleQuickEntregaReceiverFields();
+}
+
+async function openQuickEntregaModal() {
+    try {
+        quickEntregaCache = await loadQuickEntregaIngresos();
+    } catch (error) {
+        showAlert('No se pudo cargar ingresos para entrega', 'danger');
+        return;
+    }
+
+    const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.id = 'quickEntregaModal';
+    modal.setAttribute('tabindex', '-1');
+    modal.innerHTML = `
+        <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="fas fa-box-open me-2"></i>Registrar Pago Rápido</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <label class="form-label">Buscar cliente / ingreso</label>
+                            <input type="text" id="quickEntregaSearch" class="form-control" placeholder="Ej: cédula, teléfono, nombre o # de ingreso">
+                            <div id="quickEntregaSearchResults" class="list-group mt-2" style="max-height: 220px; overflow:auto;"></div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Ingreso pendiente de entrega</label>
+                            <select id="quickEntregaIngresoSelect" class="form-select"></select>
+                            <small class="text-muted">Solo muestra ingresos en estado reparado o no reparable.</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Cliente</label>
+                            <input type="text" id="quickEntregaCliente" class="form-control" readonly>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Valor a cobrar</label>
+                            <input type="text" id="quickEntregaValor" class="form-control" readonly>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Tipo de pago</label>
+                            <select id="quickEntregaTipoPago" class="form-select">
+                                <option value="">Selecciona tipo de pago...</option>
+                                <option value="efectivo">Efectivo</option>
+                                <option value="transferencia">Transferencia</option>
+                                <option value="nequi">Nequi</option>
+                                <option value="daviplata">Daviplata</option>
+                                <option value="tarjeta">Tarjeta</option>
+                                <option value="mixto">Mixto</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="quickEntregaPagado" checked>
+                                <label class="form-check-label" for="quickEntregaPagado">Marcar como pagado</label>
+                            </div>
+                        </div>
+
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="quickEntregaPagoAnticipado">
+                                <label class="form-check-label" for="quickEntregaPagoAnticipado">Pago anticipado (NO entregar equipo)</label>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6" id="quickEntregaReceiverWrap">
+                            <label class="form-label">Se entrega a</label>
+                            <select id="quickEntregaReceptorTipo" class="form-select">
+                                <option value="propietario" selected>Propietario</option>
+                                <option value="tercero">Otra persona autorizada</option>
+                            </select>
+                        </div>
+
+                        <div class="col-md-6" id="quickEntregaTerceroWrap" style="display:none;">
+                            <label class="form-label">Nombre quien recibe</label>
+                            <input type="text" id="quickEntregaTerceroNombre" class="form-control" placeholder="Nombre completo">
+                            <label class="form-label mt-2">Cédula quien recibe</label>
+                            <input type="text" id="quickEntregaTerceroCedula" class="form-control" inputmode="numeric" placeholder="Solo números">
+                        </div>
+
+                        <div class="col-12" id="quickEntregaCashWrap" style="display:none;">
+                            <div class="border rounded p-3 bg-light">
+                                <h6 class="mb-3"><i class="fas fa-money-bill-wave me-2"></i>Pago en efectivo</h6>
+                                <div class="row g-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label">Monto recibido</label>
+                                        <input type="text" id="quickEntregaMontoRecibido" class="form-control" placeholder="Ej: 50000">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Devuelta</label>
+                                        <input type="text" id="quickEntregaDevuelta" class="form-control" readonly value="$ 0">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Faltante</label>
+                                        <input type="text" id="quickEntregaFaltante" class="form-control" readonly value="$ 0">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn btn-success" id="quickEntregaConfirmBtn">
+                        <i class="fas fa-check me-2"></i>Registrar pago y entrega e imprimir ticket
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    renderQuickEntregaOptions(quickEntregaCache, '');
+    renderQuickEntregaSearchSuggestions(quickEntregaCache, '');
+
+    const searchInput = modal.querySelector('#quickEntregaSearch');
+    const select = modal.querySelector('#quickEntregaIngresoSelect');
+    const confirmBtn = modal.querySelector('#quickEntregaConfirmBtn');
+    const tipoPagoSelect = modal.querySelector('#quickEntregaTipoPago');
+    const receptorTipoSelect = modal.querySelector('#quickEntregaReceptorTipo');
+    const pagoAnticipadoCheck = modal.querySelector('#quickEntregaPagoAnticipado');
+    const recibidoInput = modal.querySelector('#quickEntregaMontoRecibido');
+    const searchResults = modal.querySelector('#quickEntregaSearchResults');
+
+    if (searchInput) {
+        const onSearch = () => {
+            const selectedBefore = Number(select?.value || 0) || null;
+            renderQuickEntregaOptions(quickEntregaCache, searchInput.value, selectedBefore);
+            renderQuickEntregaSearchSuggestions(quickEntregaCache, searchInput.value);
+            updateQuickEntregaSelectedInfo();
+        };
+
+        searchInput.addEventListener('input', onSearch);
+        searchInput.addEventListener('keyup', onSearch);
+        searchInput.addEventListener('change', onSearch);
+        searchInput.addEventListener('paste', () => setTimeout(onSearch, 0));
+    }
+
+    if (searchResults) {
+        searchResults.addEventListener('click', (event) => {
+            const button = event.target.closest('[data-ingreso-id]');
+            if (!button) return;
+
+            const ingresoId = Number(button.getAttribute('data-ingreso-id') || 0);
+            const ingreso = quickEntregaCache.find((item) => Number(item.id) === ingresoId);
+            if (!ingreso || !select) return;
+
+            select.value = String(ingresoId);
+            searchInput.value = `#${ingreso.numero_ingreso || ingreso.id} · ${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}`.trim();
+            renderQuickEntregaSearchSuggestions(quickEntregaCache, searchInput.value);
+            updateQuickEntregaSelectedInfo();
+        });
+    }
+
+    if (select) {
+        select.addEventListener('change', updateQuickEntregaSelectedInfo);
+        select.addEventListener('input', updateQuickEntregaSelectedInfo);
+    }
+
+    if (tipoPagoSelect) {
+        tipoPagoSelect.addEventListener('change', toggleQuickEntregaCashFields);
+    }
+
+    if (receptorTipoSelect) {
+        receptorTipoSelect.addEventListener('change', toggleQuickEntregaReceiverFields);
+    }
+
+    if (pagoAnticipadoCheck) {
+        pagoAnticipadoCheck.addEventListener('change', updateQuickEntregaActionMode);
+    }
+
+    if (recibidoInput) {
+        recibidoInput.addEventListener('input', () => {
+            const numericValue = parseMonetaryValue(recibidoInput.value || '0');
+            recibidoInput.value = numericValue > 0 ? formatNumberCO(numericValue) : '';
+            updateQuickEntregaCashSummary();
+        });
+    }
+
+    const terceroCedulaInput = modal.querySelector('#quickEntregaTerceroCedula');
+    if (terceroCedulaInput) {
+        terceroCedulaInput.addEventListener('input', () => {
+            terceroCedulaInput.value = sanitizeOnlyDigits(terceroCedulaInput.value || '');
+        });
+    }
+
+    if (confirmBtn) {
+        confirmBtn.addEventListener('click', procesarQuickEntrega);
+    }
+
+    toggleQuickEntregaCashFields();
+    updateQuickEntregaActionMode();
+    toggleQuickEntregaReceiverFields();
+    updateQuickEntregaSelectedInfo();
+    renderQuickEntregaSearchSuggestions(quickEntregaCache, '');
+    if (searchInput) searchInput.focus();
+
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+
+    modal.addEventListener('hidden.bs.modal', () => {
+        modal.remove();
+    });
+}
+
+async function procesarQuickEntrega() {
+    const ingresoId = Number(document.getElementById('quickEntregaIngresoSelect')?.value || 0);
+    const tipoPago = String(document.getElementById('quickEntregaTipoPago')?.value || '').trim().toLowerCase();
+    const pagado = !!document.getElementById('quickEntregaPagado')?.checked;
+    const pagoAnticipado = !!document.getElementById('quickEntregaPagoAnticipado')?.checked;
+
+    if (!ingresoId) {
+        showAlert('Selecciona un ingreso para registrar la entrega', 'warning');
+        return;
+    }
+
+    if (!tipoPago) {
+        showAlert('Selecciona el tipo de pago', 'warning');
+        return;
+    }
+
+    const ingreso = quickEntregaCache.find((item) => Number(item.id) === ingresoId);
+    const valorCobrar = Number(ingreso?.valor_total || 0);
+    const montoRecibido = Number(parseMonetaryValue(document.getElementById('quickEntregaMontoRecibido')?.value || '0') || 0);
+    const receptorTipo = String(document.getElementById('quickEntregaReceptorTipo')?.value || 'propietario').trim().toLowerCase();
+    const receptorNombre = String(document.getElementById('quickEntregaTerceroNombre')?.value || '').trim();
+    const receptorCedula = sanitizeOnlyDigits(document.getElementById('quickEntregaTerceroCedula')?.value || '');
+
+    if (!pagoAnticipado && receptorTipo === 'tercero') {
+        if (!receptorNombre || !receptorCedula) {
+            showAlert('Si entrega a otra persona, debes registrar nombre y cédula', 'warning');
+            return;
+        }
+    }
+
+    if (tipoPago === 'efectivo') {
+        if (montoRecibido <= 0) {
+            showAlert('Ingresa el monto recibido en efectivo', 'warning');
+            return;
+        }
+
+        if (pagado && montoRecibido < valorCobrar) {
+            showAlert('Si marcas como pagado, el monto recibido no puede ser menor al valor a cobrar', 'warning');
+            return;
+        }
+    }
+
+    const updatePayload = pagoAnticipado
+        ? { estado_pago: pagado ? 'pagado' : 'pendiente' }
+        : { estado_ingreso: 'entregado', estado_pago: pagado ? 'pagado' : 'pendiente' };
+
+    const updateResponse = await apiCall(`/ingresos/${ingresoId}`, {
+        method: 'PUT',
+        body: JSON.stringify(updatePayload)
+    });
+
+    if (!updateResponse || updateResponse.error || !updateResponse.success) {
+        showAlert(updateResponse?.error || 'No se pudo registrar la entrega', 'danger');
+        return;
+    }
+
+    const clienteNombre = ingreso ? `${ingreso.cliente_nombre || ''} ${ingreso.cliente_apellido || ''}`.trim() : 'N/A';
+    const valor = valorCobrar;
+    const devuelta = tipoPago === 'efectivo' ? Math.max(0, montoRecibido - valorCobrar) : 0;
+    const faltante = tipoPago === 'efectivo' ? Math.max(0, valorCobrar - montoRecibido) : 0;
+    const pagoDetalle = tipoPago === 'efectivo'
+        ? `, recibido $${montoRecibido.toLocaleString('es-CO', { maximumFractionDigits: 0 })}, devuelta $${devuelta.toLocaleString('es-CO', { maximumFractionDigits: 0 })}, faltante $${faltante.toLocaleString('es-CO', { maximumFractionDigits: 0 })}`
+        : '';
+    const receptorDetalle = pagoAnticipado
+        ? ', pago anticipado sin entrega (PENDIENTE DE REPARACION)'
+        : receptorTipo === 'tercero'
+        ? `, entregado a tercero: ${receptorNombre.toUpperCase()} CC ${receptorCedula}`
+        : ', entregado al propietario';
+
+    await apiCall(`/ingresos/${ingresoId}/notas`, {
+        method: 'POST',
+        body: JSON.stringify({
+            tipo: 'administrativa',
+            contenido: `${pagoAnticipado ? 'PAGO ANTICIPADO' : 'ENTREGA RÁPIDA'}: cliente ${clienteNombre}, tipo de pago ${tipoPago.toUpperCase()}, estado de pago ${pagado ? 'PAGADO' : 'PENDIENTE'}, valor $${valor.toLocaleString('es-CO', { maximumFractionDigits: 0 })}${pagoDetalle}${receptorDetalle}`
+        })
+    });
+
+    const modal = document.getElementById('quickEntregaModal');
+    if (modal) {
+        const instance = bootstrap.Modal.getInstance(modal);
+        if (instance) instance.hide();
+    }
+
+    showAlert(pagoAnticipado ? 'Pago anticipado registrado correctamente' : 'Entrega registrada correctamente', 'success');
+    await printTicket(ingresoId, {
+        tipo_pago: tipoPago,
+        estado_pago: pagado ? 'pagado' : 'pendiente',
+        valor_cobrar: valorCobrar,
+        monto_recibido: tipoPago === 'efectivo' ? montoRecibido : 0,
+        devuelta,
+        faltante,
+        receptor_tipo: pagoAnticipado ? '' : receptorTipo,
+        receptor_nombre: (!pagoAnticipado && receptorTipo === 'tercero') ? receptorNombre : '',
+        receptor_cedula: (!pagoAnticipado && receptorTipo === 'tercero') ? receptorCedula : ''
+    });
+
+    if (currentPage === 'tecnico' || currentPage === 'registros' || currentPage === 'dashboard') {
+        loadPage(currentPage);
+    }
+}
+
+async function loadDashboard() {
+    const response = await apiCall('/ingresos?limit=1000');
+
     if (!response.data) {
         return '<div class="alert alert-danger">Error al cargar datos</div>';
     }
 
-    // Calcular balance por mes
-    const monthlyData = calculateMonthlyBalance(response.data);
-    const months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-    const values = months.map((_, i) => monthlyData[i] || 0);
+    window.allIngresos = response.data;
 
     return `
         <div class="dashboard-shell">
-        <h2 class="mb-4 dashboard-title">Dashboard - Balance Mensual</h2>
-        
-        <div class="card mb-4 dashboard-card">
-            <div class="card-header dashboard-card-header text-white">
-                <h5 class="mb-0">Filtro por Fechas</h5>
-            </div>
-            <div class="card-body">
-                <div class="row">
-                    <div class="col-md-3">
-                        <label class="form-label">Desde:</label>
-                        <input type="date" class="form-control" id="fechaDesde">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Hasta:</label>
-                        <input type="date" class="form-control" id="fechaHasta">
-                    </div>
-                    <div class="col-md-3">
-                        <label class="form-label">Estado:</label>
-                        <select class="form-control" id="estadoFiltro">
-                            <option value="">Todos</option>
-                            <option value="reparado">Reparado</option>
-                            <option value="entregado">Entregado</option>
-                            <option value="pendiente">Pendiente</option>
-                            <option value="en_reparacion">En Reparación</option>
-                        </select>
-                    </div>
-                    <div class="col-md-3 d-flex align-items-end">
-                        <button class="btn btn-dashboard-filter w-100" onclick="filtrarDashboard()">
-                            <i class="fas fa-filter me-2"></i> Filtrar
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
+            <h2 class="mb-3 dashboard-title">Dashboard Operativo</h2>
 
-        <div class="card mb-4 dashboard-card">
-            <div class="card-header dashboard-card-header text-white">
-                <h5 class="mb-0">Balance Mensual</h5>
+            <div class="card mb-3 dashboard-card">
+                <div class="card-body py-3">
+                    <div class="row g-2 align-items-end">
+                        <div class="col-12 col-md-4">
+                            <label class="form-label mb-1">Filtrar período</label>
+                            <input type="number" class="form-control" id="dashboardRangeValue" min="1" max="36" value="1">
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <label class="form-label mb-1">Unidad</label>
+                            <select class="form-select" id="dashboardRangeUnit">
+                                <option value="days">Días</option>
+                                <option value="months">Meses</option>
+                                <option value="years">Años</option>
+                            </select>
+                        </div>
+                        <div class="col-12 col-md-4">
+                            <button class="btn btn-dashboard-filter w-100" onclick="filtrarDashboard()">
+                                <i class="fas fa-filter me-2"></i>Aplicar filtro
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="card-body">
-                <canvas id="chartBalanceMensual" style="max-height: 300px;"></canvas>
-            </div>
-        </div>
 
-        <div class="row mb-4" id="metricsRow">
-            <div class="col-md-3">
-                <div class="card bg-info text-white dashboard-metric-card">
-                    <div class="card-body">
-                        <h5 class="card-title">Total Servicios</h5>
-                        <p class="card-text display-4" id="metricTotal">0</p>
+            <div class="row g-3 mb-4 dashboard-focus-section">
+                <div class="col-6 col-lg-3">
+                    <div class="card dashboard-kpi-card dashboard-kpi-hero kpi-primary border-primary">
+                        <div class="card-body text-center">
+                            <small class="kpi-label d-block">Ingresos</small>
+                            <h4 class="mb-0 kpi-value" id="kpiIngresosHoy">0</h4>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3">
+                    <div class="card dashboard-kpi-card dashboard-kpi-hero kpi-success border-success">
+                        <div class="card-body text-center">
+                            <small class="kpi-label d-block">Entregados</small>
+                            <h4 class="mb-0 kpi-value" id="kpiEntregadosHoy">0</h4>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3">
+                    <div class="card dashboard-kpi-card dashboard-kpi-hero kpi-warning border-warning">
+                        <div class="card-body text-center">
+                            <small class="kpi-label d-block">Cobrado</small>
+                            <h4 class="mb-0 kpi-value" id="kpiCobradoHoy">$ 0</h4>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3">
+                    <div class="card dashboard-kpi-card dashboard-kpi-hero kpi-danger border-danger">
+                        <div class="card-body text-center">
+                            <small class="kpi-label d-block">Pendientes sin iniciar</small>
+                            <h4 class="mb-0 kpi-value" id="kpiPendientesSinIniciar">0</h4>
+                        </div>
                     </div>
                 </div>
             </div>
-            <div class="col-md-3">
-                <div class="card bg-success text-white dashboard-metric-card">
-                    <div class="card-body">
-                        <h5 class="card-title">Entregados y Pagados</h5>
-                        <p class="card-text display-4" id="metricReparados">0</p>
+
+            <div class="card mb-4 dashboard-card">
+                <div class="card-header dashboard-card-header text-white">
+                    <div class="d-flex align-items-center justify-content-between gap-2 flex-wrap">
+                        <h5 class="mb-0">Ventas Mensuales - <span id="dashboardChartYearLabel">${dashboardChartYear}</span></h5>
+                        <div class="d-flex align-items-center gap-2">
+                            <button class="btn btn-sm btn-light" onclick="changeDashboardChartYear(-1)" title="Año anterior">
+                                <i class="fas fa-chevron-left"></i>
+                            </button>
+                            <button class="btn btn-sm btn-light" onclick="changeDashboardChartYear(1)" title="Año siguiente">
+                                <i class="fas fa-chevron-right"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 align-items-stretch">
+                        <div class="col-lg-9">
+                            <canvas id="chartBalanceMensual" style="max-height: 320px;"></canvas>
+                        </div>
+                        <div class="col-lg-3">
+                            <div class="card h-100 border-0 dashboard-total-box">
+                                <div class="card-body d-flex flex-column justify-content-center">
+                                    <small class="text-muted">Total entregado en dinero (${dashboardChartYear})</small>
+                                    <h3 class="mb-2" id="dashboardYearTotalMoney">$ 0</h3>
+                                    <small class="text-muted">Mes mayor rendimiento</small>
+                                    <div class="fw-semibold" id="dashboardBestMonth">-</div>
+                                    <div class="fw-bold" id="dashboardBestMonthMoney">$ 0</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
-            <div class="col-md-3">
-                <div class="card bg-primary text-white dashboard-metric-card">
-                    <div class="card-body">
-                        <h5 class="card-title">Entregados</h5>
-                        <p class="card-text display-4" id="metricEntregados">0</p>
-                    </div>
+
+            <div class="card dashboard-card">
+                <div class="card-header dashboard-card-header text-white">
+                    <h5 class="mb-0">Casos que requieren atención</h5>
                 </div>
-            </div>
-            <div class="col-md-3">
-                <div class="card bg-warning text-dark dashboard-metric-card">
-                    <div class="card-body">
-                        <h5 class="card-title">Total Ingresos</h5>
-                        <p class="card-text display-4" id="metricIngresos">$ 0</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="card dashboard-card">
-            <div class="card-header dashboard-card-header text-white">
-                <h5 class="mb-0">Ingresos Recientes</h5>
-            </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table table-sm">
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0">
                         <thead>
                             <tr>
-                                <th>Número</th>
+                                <th>Ingreso</th>
                                 <th>Cliente</th>
-                                <th>Marca</th>
                                 <th>Estado</th>
-                                <th>Valor</th>
-                                <th>Fecha</th>
-                                <th>Acciones</th>
+                                <th>Días en taller</th>
+                                <th>Acción</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            ${response.data.slice(0, 10).map(ingreso => `
-                                <tr>
-                                    <td><strong>${ingreso.numero_ingreso}</strong></td>
-                                    <td>${ingreso.cliente_nombre} ${ingreso.cliente_apellido}</td>
-                                    <td>${ingreso.marca || 'N/A'}</td>
-                                    <td>
-                                        <span class="badge bg-${getStatusColor(ingreso.estado_ingreso)}">
-                                            ${ingreso.estado_ingreso}
-                                        </span>
-                                    </td>
-                                    <td>$ ${(ingreso.valor_total || 0).toLocaleString()}</td>
-                                    <td>${new Date(ingreso.fecha_ingreso).toLocaleDateString()}</td>
-                                    <td>
-                                        <button class="btn btn-sm btn-info" 
-                                                onclick="verDetalles(${ingreso.id})">
-                                            Ver
-                                        </button>
-                                    </td>
-                                </tr>
-                            `).join('')}
+                        <tbody id="dashboardHotList">
+                            <tr><td colspan="5" class="text-center text-muted py-3">Cargando...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -613,22 +1321,123 @@ async function loadDashboard() {
     `;
 }
 
-function calculateMonthlyBalance(ingresos) {
-    const monthlyData = new Array(12).fill(0);
-    
-    ingresos.forEach(ingreso => {
-        // Solo contar ingresos entregados y pagados
-        if (ingreso.estado_ingreso === 'entregado' && ingreso.estado_pago === 'pagado' && ingreso.valor_total) {
-            const fecha = new Date(ingreso.fecha_ingreso);
-            const mes = fecha.getMonth();
-            monthlyData[mes] += ingreso.valor_total;
-        }
+function calculateMonthlyRevenueByYear(ingresos, year) {
+    const monthlyMoney = new Array(12).fill(0);
+    const monthlyCount = new Array(12).fill(0);
+    (Array.isArray(ingresos) ? ingresos : []).forEach((ingreso) => {
+        if (ingreso.estado_ingreso !== 'entregado') return;
+        const fecha = new Date(ingreso.fecha_entrega || ingreso.fecha_ingreso);
+        if (Number.isNaN(fecha.getTime())) return;
+        if (fecha.getFullYear() !== year) return;
+        const month = fecha.getMonth();
+        monthlyCount[month] += 1;
+        monthlyMoney[month] += Number(ingreso.valor_total) || 0;
     });
-    
-    return monthlyData;
+    return { monthlyMoney, monthlyCount };
 }
 
-function crearGraficoBalance(values) {
+function hydrateDashboard(ingresos) {
+    const rows = Array.isArray(ingresos) ? ingresos : [];
+    const toDate = (value) => {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? null : date;
+    };
+
+    const rangeValueInput = document.getElementById('dashboardRangeValue');
+    const rangeUnitInput = document.getElementById('dashboardRangeUnit');
+    const rawRangeValue = parseInt(rangeValueInput?.value || '1', 10);
+    const rangeValue = Number.isFinite(rawRangeValue) ? Math.min(36, Math.max(1, rawRangeValue)) : 1;
+    const rangeUnit = (rangeUnitInput?.value || 'days');
+
+    const now = new Date();
+    const start = new Date(now);
+    if (rangeUnit === 'years') {
+        start.setFullYear(now.getFullYear() - rangeValue + 1, 0, 1);
+        start.setHours(0, 0, 0, 0);
+    } else if (rangeUnit === 'months') {
+        start.setMonth(now.getMonth() - rangeValue + 1, 1);
+        start.setHours(0, 0, 0, 0);
+    } else {
+        start.setDate(now.getDate() - rangeValue + 1);
+        start.setHours(0, 0, 0, 0);
+    }
+
+    const filteredRows = rows.filter((item) => {
+        const fecha = toDate(item.fecha_ingreso);
+        return fecha && fecha >= start && fecha <= now;
+    });
+
+    const ingresosHoy = filteredRows;
+    const entregadosHoy = filteredRows.filter((i) => i.estado_ingreso === 'entregado');
+    const cobradoHoy = filteredRows
+        .filter((i) => i.estado_ingreso === 'entregado' && i.estado_pago === 'pagado')
+        .reduce((sum, i) => sum + (Number(i.valor_total) || 0), 0);
+
+    const daysOpen = (ingreso) => {
+        const date = new Date(ingreso.fecha_ingreso);
+        if (Number.isNaN(date.getTime())) return 0;
+        return Math.max(0, Math.floor((Date.now() - date.getTime()) / (1000 * 60 * 60 * 24)));
+    };
+
+    const kpiIngresosHoy = document.getElementById('kpiIngresosHoy');
+    const kpiEntregadosHoy = document.getElementById('kpiEntregadosHoy');
+    const kpiCobradoHoy = document.getElementById('kpiCobradoHoy');
+    const kpiPendientesSinIniciar = document.getElementById('kpiPendientesSinIniciar');
+    if (kpiIngresosHoy) kpiIngresosHoy.textContent = ingresosHoy.length;
+    if (kpiEntregadosHoy) kpiEntregadosHoy.textContent = entregadosHoy.length;
+    if (kpiCobradoHoy) kpiCobradoHoy.textContent = '$ ' + cobradoHoy.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+    if (kpiPendientesSinIniciar) kpiPendientesSinIniciar.textContent = filteredRows.filter((i) => i.estado_ingreso === 'pendiente').length;
+
+    const hotList = document.getElementById('dashboardHotList');
+    if (hotList) {
+        const stateLabel = {
+            pendiente: 'Pendiente',
+            en_reparacion: 'En reparación',
+            reparado: 'Listo para entrega',
+            no_reparable: 'No reparable'
+        };
+        const priorityRows = filteredRows
+            .filter((i) => i.estado_ingreso !== 'entregado')
+            .sort((a, b) => daysOpen(b) - daysOpen(a))
+            .slice(0, 5);
+
+        hotList.innerHTML = priorityRows.length
+            ? priorityRows.map((ingreso) => `
+                <tr>
+                    <td><strong>#${ingreso.numero_ingreso || 'S/N'}</strong></td>
+                    <td>${(ingreso.cliente_nombre || '')} ${(ingreso.cliente_apellido || '')}</td>
+                    <td><span class="badge bg-${getStatusColor(ingreso.estado_ingreso)}">${stateLabel[ingreso.estado_ingreso] || ingreso.estado_ingreso}</span></td>
+                    <td>${daysOpen(ingreso)}</td>
+                    <td><button class="btn btn-sm btn-info" onclick="verDetalles(${ingreso.id})">Ver</button></td>
+                </tr>
+            `).join('')
+            : '<tr><td colspan="5" class="text-center text-muted py-3">No hay casos críticos</td></tr>';
+    }
+
+    const revenueData = calculateMonthlyRevenueByYear(window.allIngresos || rows, dashboardChartYear);
+    const yearLabel = document.getElementById('dashboardChartYearLabel');
+    if (yearLabel) yearLabel.textContent = String(dashboardChartYear);
+    updateYearSummaryBox(revenueData.monthlyMoney);
+    crearGraficoBalance(revenueData.monthlyMoney, revenueData.monthlyCount);
+}
+
+function updateYearSummaryBox(monthlyMoney) {
+    const totalEl = document.getElementById('dashboardYearTotalMoney');
+    const bestMonthEl = document.getElementById('dashboardBestMonth');
+    const bestMonthMoneyEl = document.getElementById('dashboardBestMonthMoney');
+    if (!totalEl || !bestMonthEl || !bestMonthMoneyEl) return;
+
+    const total = monthlyMoney.reduce((acc, val) => acc + (Number(val) || 0), 0);
+    const maxValue = Math.max(...monthlyMoney, 0);
+    const bestMonthIndex = monthlyMoney.findIndex((value) => value === maxValue);
+    const monthNames = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
+
+    totalEl.textContent = '$ ' + total.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+    bestMonthEl.textContent = maxValue > 0 && bestMonthIndex >= 0 ? monthNames[bestMonthIndex] : '-';
+    bestMonthMoneyEl.textContent = '$ ' + (maxValue || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+}
+
+function crearGraficoBalance(monthlyMoney, monthlyCount) {
     const ctx = document.getElementById('chartBalanceMensual');
     if (!ctx) {
         console.warn('chartBalanceMensual element not found');
@@ -648,47 +1457,31 @@ function crearGraficoBalance(values) {
 
         const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
         const monthColors = [
-            'rgba(255, 99, 132, 0.72)',
-            'rgba(54, 162, 235, 0.72)',
-            'rgba(255, 206, 86, 0.72)',
-            'rgba(75, 192, 192, 0.72)',
-            'rgba(153, 102, 255, 0.72)',
-            'rgba(255, 159, 64, 0.72)',
-            'rgba(46, 204, 113, 0.72)',
-            'rgba(231, 76, 60, 0.72)',
-            'rgba(52, 152, 219, 0.72)',
-            'rgba(241, 196, 15, 0.72)',
-            'rgba(155, 89, 182, 0.72)',
-            'rgba(26, 188, 156, 0.72)'
+            'rgba(59, 130, 246, 0.78)',
+            'rgba(16, 185, 129, 0.78)',
+            'rgba(245, 158, 11, 0.78)',
+            'rgba(239, 68, 68, 0.78)',
+            'rgba(139, 92, 246, 0.78)',
+            'rgba(20, 184, 166, 0.78)',
+            'rgba(251, 113, 133, 0.78)',
+            'rgba(14, 165, 233, 0.78)',
+            'rgba(132, 204, 22, 0.78)',
+            'rgba(249, 115, 22, 0.78)',
+            'rgba(236, 72, 153, 0.78)',
+            'rgba(99, 102, 241, 0.78)'
         ];
-        const monthBorderColors = [
-            'rgba(255, 99, 132, 1)',
-            'rgba(54, 162, 235, 1)',
-            'rgba(255, 206, 86, 1)',
-            'rgba(75, 192, 192, 1)',
-            'rgba(153, 102, 255, 1)',
-            'rgba(255, 159, 64, 1)',
-            'rgba(46, 204, 113, 1)',
-            'rgba(231, 76, 60, 1)',
-            'rgba(52, 152, 219, 1)',
-            'rgba(241, 196, 15, 1)',
-            'rgba(155, 89, 182, 1)',
-            'rgba(26, 188, 156, 1)'
-        ];
-        const monthHoverColors = monthColors.map(color => color.replace('0.72', '0.92'));
         
         window.chartInstance = new Chart(ctx, {
             type: 'bar',
             data: {
                 labels: months,
                 datasets: [{
-                    label: 'Balance Mensual ($)',
-                    data: values,
+                    label: 'Total entregado en dinero',
+                    data: monthlyMoney,
                     backgroundColor: monthColors,
-                    borderColor: monthBorderColors,
+                    borderColor: monthColors.map((c) => c.replace('0.78', '1')),
                     borderWidth: 2,
-                    borderRadius: 5,
-                    hoverBackgroundColor: monthHoverColors
+                    borderRadius: 5
                 }]
             },
             options: {
@@ -700,15 +1493,16 @@ function crearGraficoBalance(values) {
                         position: 'top'
                     },
                     tooltip: {
-                        backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                        titleColor: '#fff',
-                        bodyColor: '#fff',
-                        padding: 12,
-                        displayColors: true,
+                        backgroundColor: 'rgba(0, 0, 0, 0.85)',
                         callbacks: {
-                            label: function(context) {
-                                const value = context.raw;
-                                return 'Total: $' + value.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+                            label: (context) => {
+                                const monthIndex = context.dataIndex;
+                                const money = Number(monthlyMoney[monthIndex] || 0);
+                                const count = Number(monthlyCount[monthIndex] || 0);
+                                return [
+                                    `Dinero: $ ${money.toLocaleString('es-CO', { maximumFractionDigits: 0 })}`,
+                                    `Teléfonos entregados: ${count}`
+                                ];
                             }
                         }
                     }
@@ -717,9 +1511,7 @@ function crearGraficoBalance(values) {
                     y: {
                         beginAtZero: true,
                         ticks: {
-                            callback: function(value) {
-                                return '$' + value.toLocaleString('es-CO', { maximumFractionDigits: 0 });
-                            }
+                            callback: (value) => '$ ' + Number(value).toLocaleString('es-CO', { maximumFractionDigits: 0 })
                         }
                     }
                 }
@@ -731,79 +1523,13 @@ function crearGraficoBalance(values) {
     }
 }
 
-function actualizarMetricas(ingresos) {
-    // Verificar que los elementos existan
-    const metricTotal = document.getElementById('metricTotal');
-    const metricReparados = document.getElementById('metricReparados');
-    const metricEntregados = document.getElementById('metricEntregados');
-    const metricIngresos = document.getElementById('metricIngresos');
-    
-    if (!metricTotal || !metricReparados || !metricEntregados || !metricIngresos) {
-        console.warn('Metric elements not found');
-        return;
-    }
-    
-    const fechaDesde = document.getElementById('fechaDesde')?.value;
-    const fechaHasta = document.getElementById('fechaHasta')?.value;
-    const estadoFiltro = document.getElementById('estadoFiltro')?.value;
-
-    let filtrados = ingresos;
-
-    if (fechaDesde) {
-        const desde = new Date(fechaDesde);
-        filtrados = filtrados.filter(i => new Date(i.fecha_ingreso) >= desde);
-    }
-
-    if (fechaHasta) {
-        const hasta = new Date(fechaHasta);
-        hasta.setHours(23, 59, 59, 999);
-        filtrados = filtrados.filter(i => new Date(i.fecha_ingreso) <= hasta);
-    }
-
-    if (estadoFiltro && estadoFiltro !== 'todos') {
-        filtrados = filtrados.filter(i => i.estado_ingreso === estadoFiltro);
-    }
-
-    const reparados = filtrados.filter(i => i.estado_ingreso === 'entregado' && i.estado_pago === 'pagado').length;
-    const entregados = filtrados.filter(i => i.estado_ingreso === 'entregado').length;
-    const totalIngresos = filtrados
-        .filter(i => i.estado_ingreso === 'entregado' && i.estado_pago === 'pagado')
-        .reduce((sum, i) => sum + (i.valor_total || 0), 0);
-
-    metricTotal.textContent = filtrados.length;
-    metricReparados.textContent = reparados;
-    metricEntregados.textContent = entregados;
-    metricIngresos.textContent = '$ ' + totalIngresos.toLocaleString('es-CO', { maximumFractionDigits: 0 });
+function changeDashboardChartYear(delta) {
+    dashboardChartYear += delta;
+    hydrateDashboard(window.allIngresos || []);
 }
 
 function filtrarDashboard() {
-    const fechaDesde = document.getElementById('fechaDesde')?.value;
-    const fechaHasta = document.getElementById('fechaHasta')?.value;
-    const estadoFiltro = document.getElementById('estadoFiltro')?.value;
-
-    // Recalcular balance mensual con filtros
-    let filtrados = window.allIngresos;
-
-    if (fechaDesde) {
-        const desde = new Date(fechaDesde);
-        filtrados = filtrados.filter(i => new Date(i.fecha_ingreso) >= desde);
-    }
-
-    if (fechaHasta) {
-        const hasta = new Date(fechaHasta);
-        hasta.setHours(23, 59, 59, 999);
-        filtrados = filtrados.filter(i => new Date(i.fecha_ingreso) <= hasta);
-    }
-
-    if (estadoFiltro) {
-        filtrados = filtrados.filter(i => i.estado_ingreso === estadoFiltro);
-    }
-
-    const monthlyData = calculateMonthlyBalance(filtrados);
-    const values = monthlyData;
-    
-    crearGraficoBalance(values);
-    actualizarMetricas(filtrados);
+    hydrateDashboard(window.allIngresos || []);
 }
 
 async function loadIngresoForm() {
@@ -1435,10 +2161,9 @@ async function submitIngreso(e) {
         cliente_existente_seleccionado: isSelectedExistingClient
     };
 
-    if (datos.valor_reparacion === 0) {
-        const totalSugerido = Array.from(document.querySelectorAll('.falla-checkbox:checked'))
-            .reduce((sum, cb) => sum + Number(cb.dataset.precio || 0), 0);
-        datos.valor_reparacion = totalSugerido > 0 ? Math.round(totalSugerido) : 0;
+    const totalFallasSeleccionadas = getSelectedFallasTotal();
+    if (datos.valor_reparacion === 0 && totalFallasSeleccionadas > 0) {
+        datos.valor_reparacion = totalFallasSeleccionadas;
     }
 
     clearWizardStepAlert(1);
@@ -1702,7 +2427,7 @@ async function loadRegistros() {
                                             onclick="verDetalles(${ingreso.id})">
                                         <i class="fas fa-eye"></i>
                                     </button>
-                                    ${user && user.rol === 'admin' ? `
+                                    ${user && user.rol === 'admin' && String(ingreso.estado_ingreso || '').toLowerCase() !== 'entregado' ? `
                                         <button class="btn btn-sm btn-danger" 
                                                 onclick="deleteIngreso(${ingreso.id})">
                                             <i class="fas fa-trash"></i>
@@ -1781,7 +2506,7 @@ async function filtrarRegistros(page = 1) {
                     <button class="btn btn-sm btn-info" onclick="verDetalles(${ingreso.id})">
                         <i class="fas fa-eye"></i>
                     </button>
-                    ${user && user.rol === 'admin' ? `
+                    ${user && user.rol === 'admin' && String(ingreso.estado_ingreso || '').toLowerCase() !== 'entregado' ? `
                         <button class="btn btn-sm btn-danger" onclick="deleteIngreso(${ingreso.id})">
                             <i class="fas fa-trash"></i>
                         </button>
@@ -1969,91 +2694,138 @@ function renderGarantiasTab(garantias) {
 
     const activasCount = casos.filter((caso) => caso.estadoGarantia !== 'resuelta').length;
     const resueltasCount = casos.length - activasCount;
+    const casosActivos = casos.filter((caso) => caso.estadoGarantia !== 'resuelta');
+    const casosResueltos = casos.filter((caso) => caso.estadoGarantia === 'resuelta');
+
+    const renderGarantiaRow = (caso) => {
+        const g = caso.latest;
+        const cliente = `${g.cliente_nombre || ''} ${g.cliente_apellido || ''}`.trim();
+        const equipo = `${g.marca || ''} ${g.modelo || ''}${g.color ? ` · ${g.color}` : ''}`.trim();
+        const filtro = `${g.numero_ingreso || ''} ${cliente} ${g.cliente_cedula || ''} ${equipo} ${caso.comentarioApertura} ${caso.ultimoMovimiento}`.toLowerCase();
+        const badgeClass = {
+            abierta: 'bg-warning text-dark',
+            en_gestion: 'bg-primary',
+            resuelta: 'bg-success'
+        }[caso.estadoGarantia] || 'bg-secondary';
+        const estadoLabel = {
+            abierta: 'Pendiente',
+            en_gestion: 'En gestión',
+            resuelta: 'Resuelta'
+        }[caso.estadoGarantia] || 'Sin estado';
+
+        return `
+            <tr class="fila-garantia" data-filter="${filtro}">
+                <td><strong>#${g.numero_ingreso || 'S/N'}</strong></td>
+                <td>
+                    ${cliente || 'N/A'}
+                    <br><small class="text-muted">CC: ${g.cliente_cedula || 'N/A'} · ${g.cliente_telefono || 'N/A'}</small>
+                </td>
+                <td><small>${equipo || 'N/A'}</small></td>
+                <td><small>${caso.comentarioApertura || 'Sin comentario'}</small></td>
+                <td><small>${caso.ultimoMovimiento || 'Sin movimiento'}</small><br><small class="text-muted">${g.usuario || 'N/A'} · ${new Date(g.fecha_creacion).toLocaleString('es-ES')}</small></td>
+                <td><span class="badge ${badgeClass}">${estadoLabel}</span></td>
+                <td>
+                    ${caso.estadoGarantia !== 'resuelta' ? `
+                        <button class="btn btn-sm btn-outline-success" onclick="abrirModalResolverGarantia(${g.ingreso_id})" title="Marcar resuelta">
+                            Resolver
+                        </button>
+                    ` : ''}
+                    <button class="btn btn-sm btn-info" onclick="verDetalleGarantia(${g.ingreso_id})" title="Ver detalle de garantía">
+                        <i class="fas fa-eye"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    };
 
     const html = `
         <div class="card">
             <div class="card-header">
                 <h5 class="mb-3">Trazabilidad de Garantías</h5>
-                <div class="d-flex flex-wrap gap-2 mb-2">
-                    <span class="badge bg-warning text-dark">Activas: ${activasCount}</span>
-                    <span class="badge bg-success">Resueltas (histórico): ${resueltasCount}</span>
-                </div>
-                <input type="text" class="form-control" id="buscarGarantias" placeholder="Buscar por ingreso, cliente, cédula, equipo o comentario...">
+                <ul class="nav nav-tabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#garantias-activas" type="button" role="tab">
+                            Activas (${activasCount})
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#garantias-resueltas" type="button" role="tab">
+                            Resueltas (histórico) (${resueltasCount})
+                        </button>
+                    </li>
+                </ul>
             </div>
             <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-sm table-hover mb-0" id="tablaGarantias">
-                        <thead class="table-light">
-                            <tr>
-                                <th>Ingreso</th>
-                                <th>Cliente</th>
-                                <th>Equipo</th>
-                                <th>Motivo garantía</th>
-                                <th>Último movimiento</th>
-                                <th>Estado garantía</th>
-                                <th>Acciones</th>
-                            </tr>
-                        </thead>
-                        <tbody id="listGarantias">
-                            ${casos.length > 0 ? casos.map((caso) => {
-                                const g = caso.latest;
-                                const cliente = `${g.cliente_nombre || ''} ${g.cliente_apellido || ''}`.trim();
-                                const equipo = `${g.marca || ''} ${g.modelo || ''}${g.color ? ` · ${g.color}` : ''}`.trim();
-                                const filtro = `${g.numero_ingreso || ''} ${cliente} ${g.cliente_cedula || ''} ${equipo} ${caso.comentarioApertura} ${caso.ultimoMovimiento}`.toLowerCase();
-                                const badgeClass = {
-                                    abierta: 'bg-warning text-dark',
-                                    en_gestion: 'bg-primary',
-                                    resuelta: 'bg-success'
-                                }[caso.estadoGarantia] || 'bg-secondary';
-                                const estadoLabel = {
-                                    abierta: 'Pendiente',
-                                    en_gestion: 'En gestión',
-                                    resuelta: 'Resuelta'
-                                }[caso.estadoGarantia] || 'Sin estado';
-
-                                return `
-                                    <tr class="fila-garantia" data-filter="${filtro}">
-                                        <td><strong>#${g.numero_ingreso || 'S/N'}</strong></td>
-                                        <td>
-                                            ${cliente || 'N/A'}
-                                            <br><small class="text-muted">CC: ${g.cliente_cedula || 'N/A'} · ${g.cliente_telefono || 'N/A'}</small>
-                                        </td>
-                                        <td><small>${equipo || 'N/A'}</small></td>
-                                        <td><small>${caso.comentarioApertura || 'Sin comentario'}</small></td>
-                                        <td><small>${caso.ultimoMovimiento || 'Sin movimiento'}</small><br><small class="text-muted">${g.usuario || 'N/A'} · ${new Date(g.fecha_creacion).toLocaleString('es-ES')}</small></td>
-                                        <td><span class="badge ${badgeClass}">${estadoLabel}</span></td>
-                                        <td>
-                                            ${caso.estadoGarantia !== 'resuelta' ? `
-                                                <button class="btn btn-sm btn-outline-success" onclick="abrirModalResolverGarantia(${g.ingreso_id})" title="Marcar resuelta">
-                                                    Resolver
-                                                </button>
-                                            ` : ''}
-                                            <button class="btn btn-sm btn-info" onclick="verDetalleGarantia(${g.ingreso_id})" title="Ver detalle de garantía">
-                                                <i class="fas fa-eye"></i>
-                                            </button>
-                                        </td>
+                <div class="tab-content">
+                    <div id="garantias-activas" class="tab-pane fade show active">
+                        <div class="p-3 border-bottom">
+                            <input type="text" class="form-control" id="buscarGarantiasActivas" placeholder="Buscar activas por ingreso, cliente, cédula, equipo o comentario...">
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Ingreso</th>
+                                        <th>Cliente</th>
+                                        <th>Equipo</th>
+                                        <th>Motivo garantía</th>
+                                        <th>Último movimiento</th>
+                                        <th>Estado garantía</th>
+                                        <th>Acciones</th>
                                     </tr>
-                                `;
-                            }).join('') : '<tr><td colspan="7" class="text-center text-muted py-4">No hay garantías registradas</td></tr>'}
-                        </tbody>
-                    </table>
+                                </thead>
+                                <tbody id="listGarantiasActivas">
+                                    ${casosActivos.length > 0 ? casosActivos.map(renderGarantiaRow).join('') : '<tr><td colspan="7" class="text-center text-muted py-4">No hay garantías activas</td></tr>'}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div id="garantias-resueltas" class="tab-pane fade">
+                        <div class="p-3 border-bottom">
+                            <input type="text" class="form-control" id="buscarGarantiasResueltas" placeholder="Buscar en histórico resuelto por ingreso, cliente, cédula, equipo o comentario...">
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-hover mb-0">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Ingreso</th>
+                                        <th>Cliente</th>
+                                        <th>Equipo</th>
+                                        <th>Motivo garantía</th>
+                                        <th>Último movimiento</th>
+                                        <th>Estado garantía</th>
+                                        <th>Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="listGarantiasResueltas">
+                                    ${casosResueltos.length > 0 ? casosResueltos.map(renderGarantiaRow).join('') : '<tr><td colspan="7" class="text-center text-muted py-4">No hay garantías resueltas en histórico</td></tr>'}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
     `;
 
     setTimeout(() => {
-        const buscarGarantiasInput = document.getElementById('buscarGarantias');
-        if (!buscarGarantiasInput) return;
+        const bindSearch = (inputId, rowsSelector) => {
+            const input = document.getElementById(inputId);
+            if (!input) return;
 
-        buscarGarantiasInput.addEventListener('keyup', function() {
-            const filtro = this.value.toLowerCase();
-            const filas = document.querySelectorAll('.fila-garantia');
-            filas.forEach((fila) => {
-                const texto = fila.getAttribute('data-filter') || '';
-                fila.style.display = texto.includes(filtro) ? '' : 'none';
+            input.addEventListener('keyup', function() {
+                const filtro = this.value.toLowerCase();
+                const filas = document.querySelectorAll(rowsSelector);
+                filas.forEach((fila) => {
+                    const texto = fila.getAttribute('data-filter') || '';
+                    fila.style.display = texto.includes(filtro) ? '' : 'none';
+                });
             });
-        });
+        };
+
+        bindSearch('buscarGarantiasActivas', '#listGarantiasActivas .fila-garantia');
+        bindSearch('buscarGarantiasResueltas', '#listGarantiasResueltas .fila-garantia');
     }, 100);
 
     return html;
@@ -2284,18 +3056,8 @@ async function verDetalleGarantia(ingresoId) {
 
 function renderIngresosPorEstado(ingresos, estado) {
     const filtrados = ingresos.filter(i => i.estado_ingreso === estado);
-    const estadoTitulos = {
-        pendiente: 'Pendientes por iniciar',
-        en_reparacion: 'Equipos en reparación',
-        reparado: 'Listos para entrega',
-        no_reparable: 'Casos no reparables'
-    };
-    const tituloSeccion = estadoTitulos[estado] || 'Ingresos';
     
     return `
-        <div class="alert alert-light border mb-3 py-2">
-            <small><strong>${tituloSeccion}:</strong> usa “Mover a …” para avanzar cada caso en el flujo.</small>
-        </div>
         <div class="card">
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -2307,7 +3069,7 @@ function renderIngresosPorEstado(ingresos, estado) {
                                 <th>Equipo</th>
                                 <th>Estado</th>
                                 <th>Fecha</th>
-                                <th width="420">Acciones</th>
+                                <th>Acciones</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2322,7 +3084,7 @@ function renderIngresosPorEstado(ingresos, estado) {
                                     <td><span class="badge bg-info">${ingreso.estado_ingreso || 'pendiente'}</span></td>
                                     <td><small>${(() => { const d = new Date(ingreso.fecha_ingreso); const hh = String(d.getHours()).padStart(2, '0'); const mm = String(d.getMinutes()).padStart(2, '0'); return d.toLocaleDateString('es-ES') + ' ' + hh + ':' + mm; })()}</small></td>
                                     <td>
-                                        <div class="d-flex flex-wrap gap-1 align-items-center">
+                                        <div class="d-flex flex-wrap gap-1 align-items-center tecnico-actions">
                                             ${getTecnicoEstadoActionButtons(ingreso.id, ingreso.estado_ingreso)}
                                             <button class="btn btn-sm btn-info" onclick="verDetallesTecnico(${ingreso.id})">
                                                 Ver detalle
@@ -2391,14 +3153,14 @@ function renderIngresosEntregadosEnLista(ingresos) {
                     <table class="table table-sm table-hover mb-0" id="tablaEntregados">
                         <thead class="table-light">
                             <tr>
-                                <th width="70">Ingreso</th>
+                                <th>Ingreso</th>
                                 <th>Nombre</th>
-                                <th width="110">Cédula</th>
-                                <th width="110">Teléfono</th>
+                                <th>Cédula</th>
+                                <th>Teléfono</th>
                                 <th>Celular Reparado</th>
                                 <th>Reparación</th>
-                                <th width="90">Fecha</th>
-                                <th width="80">Acciones</th>
+                                <th>Fecha</th>
+                                <th>Acciones</th>
                             </tr>
                         </thead>
                         <tbody id="listEntregados">
@@ -2509,6 +3271,13 @@ async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
                                 Marcar como pagado al entregar
                             </label>
                         </div>
+
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="soloPagoAnticipado">
+                            <label class="form-check-label" for="soloPagoAnticipado">
+                                Registrar pago anticipado (NO entregar equipo)
+                            </label>
+                        </div>
                         
                         <div id="ajusteValor" style="display: none;">
                             <label class="form-label">Nuevo valor de reparación:</label>
@@ -2572,6 +3341,7 @@ async function procesarEntrega(ingresoId) {
         // Verificar si se debe ajustar el valor
         const confirmarValor = document.querySelector('input[name="confirmarValor"]:checked')?.value;
         const pagoRecibido = document.getElementById('pagoRecibido')?.checked;
+        const soloPagoAnticipado = document.getElementById('soloPagoAnticipado')?.checked;
         let nuevoValor = null;
         let motivoAjuste = '';
         
@@ -2612,10 +3382,12 @@ async function procesarEntrega(ingresoId) {
         }
         
         // Marcar como entregado
-        const data = {
-            estado_ingreso: 'entregado',
-            estado_pago: pagoRecibido ? 'pagado' : 'pendiente'
-        };
+        const data = soloPagoAnticipado
+            ? { estado_pago: pagoRecibido ? 'pagado' : 'pendiente' }
+            : {
+                estado_ingreso: 'entregado',
+                estado_pago: pagoRecibido ? 'pagado' : 'pendiente'
+            };
         const response = await apiCall(`/ingresos/${ingresoId}`, {
             method: 'PUT',
             body: JSON.stringify(data)
@@ -2639,7 +3411,7 @@ async function procesarEntrega(ingresoId) {
                 }, 500);
             }
             
-            showAlert('Ingreso marcado como entregado correctamente', 'success');
+            showAlert(soloPagoAnticipado ? 'Pago anticipado registrado sin cambiar estado del equipo' : 'Ingreso marcado como entregado correctamente', 'success');
             loadPage('tecnico'); // Recargar el panel
         } else {
             showAlert('Error al marcar como entregado: ' + (response?.error || 'desconocido'), 'danger');
@@ -2686,6 +3458,11 @@ async function loadAdminPanel() {
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link ${adminActiveTab === 'impresion' ? 'active' : ''}" data-bs-toggle="tab" href="#impresion">
+                    <i class="fas fa-print me-2"></i> Impresión
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link ${adminActiveTab === 'respaldo' ? 'active' : ''}" data-bs-toggle="tab" href="#respaldo">
                     <i class="fas fa-database me-2"></i> Respaldo
                 </a>
@@ -2710,6 +3487,9 @@ async function loadAdminPanel() {
             </div>
             <div id="config" class="tab-pane fade ${adminActiveTab === 'config' ? 'show active' : ''}">
                 ${await loadAdminConfig()}
+            </div>
+            <div id="impresion" class="tab-pane fade ${adminActiveTab === 'impresion' ? 'show active' : ''}">
+                ${await loadAdminPrintConfig()}
             </div>
             <div id="respaldo" class="tab-pane fade ${adminActiveTab === 'respaldo' ? 'show active' : ''}">
                 ${await loadAdminRespaldo()}
@@ -3239,6 +4019,40 @@ async function loadAdminRespaldo() {
                 </div>
             </div>
 
+            <div class="col-lg-6">
+                <div class="card p-4 h-100">
+                    <h5 class="mb-3">Base de Datos Completa</h5>
+                    <div class="mb-3">
+                        <button class="btn btn-outline-primary" onclick="exportFullDatabase()">
+                            <i class="fas fa-download me-2"></i>Exportar BD completa (CSV .zip)
+                        </button>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label">Importar BD completa</label>
+                        <input type="file" id="fullDbFile" class="form-control" accept=".zip,application/zip">
+                        <small class="text-muted">Usa el .zip exportado por el sistema (incluye CSV por tabla para editar en Excel).</small>
+                    </div>
+                    <div>
+                        <button class="btn btn-outline-danger" onclick="importFullDatabase()">
+                            <i class="fas fa-file-import me-2"></i>Importar BD completa (CSV .zip)
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div class="card p-4 h-100 border-danger">
+                    <h5 class="mb-3 text-danger">Zona de Riesgo</h5>
+                    <p class="text-muted mb-3">Elimina todos los ingresos (incluye estados pagados, fallas y notas) sin borrar clientes.</p>
+                    <div>
+                        <button class="btn btn-danger" onclick="clearAllIngresosKeepClientes()">
+                            <i class="fas fa-trash-alt me-2"></i>Eliminar todos los ingresos
+                        </button>
+                    </div>
+                    <small class="text-muted d-block mt-2">Se genera un backup automático antes de ejecutar.</small>
+                </div>
+            </div>
+
             <div class="col-12">
                 <div class="card p-4">
                     <h5 class="mb-3">Historial de Copias</h5>
@@ -3272,6 +4086,134 @@ async function loadAdminRespaldo() {
             </div>
         </div>
     `;
+}
+
+function updateBrowserPrintBridgeStatus(extra = '') {
+    const el = document.getElementById('browserPrintBridgeStatus');
+    if (!el) return;
+    const base = browserPrintBridgeActive ? 'Estado: activo' : 'Estado: inactivo';
+    el.textContent = extra ? `${base} · ${extra}` : base;
+}
+
+function getBrowserWorkerName() {
+    const key = 'celupro_browser_worker_name';
+    let value = localStorage.getItem(key);
+    if (!value) {
+        const platform = String(navigator.platform || 'WEB').replace(/[^a-zA-Z0-9]/g, '').toUpperCase() || 'WEB';
+        value = `BROWSER_${platform}_${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+        localStorage.setItem(key, value);
+    }
+    return value;
+}
+
+async function sendBrowserWorkerHeartbeat(workerNameOverride = null) {
+    const workerName = String(workerNameOverride || browserPrintBridgeWorkerName || getBrowserWorkerName()).trim();
+    try {
+        await apiCall('/print-workers/heartbeat', {
+            method: 'POST',
+            body: JSON.stringify({
+                worker_name: workerName,
+                worker_type: 'browser',
+                printer_name: workerName
+            })
+        });
+    } catch (_) {
+    }
+    return workerName;
+}
+
+async function processBrowserPrintBridgeOnce() {
+    if (!browserPrintBridgeActive || browserPrintBridgeBusy) return;
+    browserPrintBridgeBusy = true;
+
+    try {
+        const browserWorkerName = await sendBrowserWorkerHeartbeat(browserPrintBridgeWorkerName);
+        const claim = await apiCall('/print-jobs/claim', {
+            method: 'POST',
+            body: JSON.stringify({ printer_name: browserWorkerName, worker_type: 'browser' })
+        });
+
+        const job = claim?.job;
+        if (!job) {
+            updateBrowserPrintBridgeStatus('sin trabajos');
+            return;
+        }
+
+        updateBrowserPrintBridgeStatus(`procesando ingreso #${job.ingreso_id}`);
+
+        const ticketResponse = await apiCall(`/ingresos/${job.ingreso_id}/ticket`);
+        if (!ticketResponse || ticketResponse.error || !ticketResponse.ticket_data) {
+            await apiCall(`/print-jobs/${job.id}/fail`, {
+                method: 'POST',
+                body: JSON.stringify({ error: ticketResponse?.error || 'No se pudo generar ticket' })
+            });
+            updateBrowserPrintBridgeStatus('error al generar ticket');
+            return;
+        }
+
+        const paymentMeta = job?.payload?.payment_meta || null;
+        simulatePrint(ticketResponse, paymentMeta);
+
+        await apiCall(`/print-jobs/${job.id}/complete`, {
+            method: 'POST',
+            body: JSON.stringify({})
+        });
+
+        updateBrowserPrintBridgeStatus(`impreso ingreso #${job.ingreso_id}`);
+    } catch (error) {
+        updateBrowserPrintBridgeStatus(`error: ${error.message}`);
+    } finally {
+        browserPrintBridgeBusy = false;
+    }
+}
+
+function startBrowserPrintBridge(options = {}) {
+    if (browserPrintBridgeActive) {
+        if (!options.silent) {
+            showAlert('Modo impresora ya está activo en este navegador', 'info');
+        }
+        return;
+    }
+
+    const workerName = String(options.workerName || getBrowserWorkerName()).trim();
+    browserPrintBridgeWorkerName = workerName;
+
+    apiCall('/configuracion/publica')
+        .then((publicConfig) => {
+            const modeFromConfig = String(publicConfig?.print_dispatch_mode || '').trim().toLowerCase();
+            if (modeFromConfig === 'queue_silent') {
+                if (!options.silent) {
+                    showAlert('Modo silencioso activo: para quitar previsualización abre Chrome/Edge del local con --kiosk-printing', 'warning');
+                }
+            }
+        })
+        .catch(() => {
+        });
+
+    browserPrintBridgeActive = true;
+    updateBrowserPrintBridgeStatus('iniciando...');
+    if (!options.silent) {
+        showAlert('Modo impresora activado en este navegador', 'success');
+    }
+
+    sendBrowserWorkerHeartbeat(workerName);
+    processBrowserPrintBridgeOnce();
+    browserPrintBridgeTimer = setInterval(processBrowserPrintBridgeOnce, 3000);
+}
+
+function refreshPrintWorkersList() {
+    loadPage('admin');
+}
+
+function stopBrowserPrintBridge() {
+    browserPrintBridgeActive = false;
+    browserPrintBridgeBusy = false;
+    if (browserPrintBridgeTimer) {
+        clearInterval(browserPrintBridgeTimer);
+        browserPrintBridgeTimer = null;
+    }
+    updateBrowserPrintBridgeStatus();
+    showAlert('Modo impresora desactivado', 'warning');
 }
 
 function formatBytes(bytes) {
@@ -3421,7 +4363,7 @@ async function importClientesCsv() {
         }
 
         showAlert(
-            `Importación completada. Actualizados: ${payload.updated_rows || 0}, sin coincidencia: ${payload.no_match_rows || 0}, omitidos: ${payload.skipped_rows || 0}`,
+            `Importación completada. Clientes: ${payload.clientes_upserted || 0}, ingresos actualizados: ${payload.updated_rows || 0}, sin coincidencia: ${payload.no_match_rows || 0}, omitidos: ${payload.skipped_rows || 0}`,
             'success'
         );
     } catch (error) {
@@ -3429,22 +4371,135 @@ async function importClientesCsv() {
     }
 }
 
+async function exportFullDatabase() {
+    try {
+        const response = await fetch(`${API_BASE}/admin/db/export`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+
+        if (!response.ok) {
+            let errorText = `Error ${response.status}`;
+            try {
+                const errorJson = await response.json();
+                errorText = errorJson.error || errorText;
+            } catch (_) {
+            }
+            showAlert(errorText, 'danger');
+            return;
+        }
+
+        const disposition = response.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="?([^";]+)"?/i);
+        const filename = match ? match[1] : `celupro_full_csv_${Date.now()}.zip`;
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+
+        showAlert('Base de datos CSV exportada correctamente', 'success');
+    } catch (error) {
+        showAlert(`Error exportando base de datos: ${error.message}`, 'danger');
+    }
+}
+
+async function importFullDatabase() {
+    const input = document.getElementById('fullDbFile');
+    const file = input?.files?.[0];
+
+    if (!file) {
+        showAlert('Selecciona un archivo .zip para importar', 'warning');
+        return;
+    }
+
+    if (!String(file.name || '').toLowerCase().endsWith('.zip')) {
+        showAlert('El archivo debe ser .zip (CSV por tabla)', 'warning');
+        return;
+    }
+
+    const confirmReplace = confirm('Esta acción reemplazará los datos actuales con los CSV del ZIP. ¿Deseas continuar?');
+    if (!confirmReplace) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch(`${API_BASE}/admin/db/import`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            body: formData
+        });
+
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            showAlert(payload?.error || `Error ${response.status} al importar base de datos`, 'danger');
+            return;
+        }
+
+        showAlert(payload?.message || 'Base de datos importada correctamente', 'success');
+        setTimeout(() => {
+            adminActiveTab = 'respaldo';
+            loadPage('admin');
+        }, 700);
+    } catch (error) {
+        showAlert(`Error importando base de datos: ${error.message}`, 'danger');
+    }
+}
+
+async function clearAllIngresosKeepClientes() {
+    const firstConfirm = await showConfirmModal(
+        'Esto eliminará TODOS los ingresos, incluyendo pagados, fallas y notas. Los clientes se conservan. ¿Deseas continuar?',
+        {
+            title: 'Confirmar eliminación masiva',
+            confirmText: 'Sí, continuar',
+            cancelText: 'Cancelar',
+            confirmClass: 'btn-danger'
+        }
+    );
+
+    if (!firstConfirm) return;
+
+    const secondConfirm = window.confirm('Última confirmación: esta acción es irreversible. ¿Eliminar todos los ingresos ahora?');
+    if (!secondConfirm) return;
+
+    const response = await apiCall('/admin/ingresos/clear', {
+        method: 'POST'
+    });
+
+    if (!response || response.error || !response.success) {
+        showAlert(response?.error || 'No se pudo eliminar los ingresos', 'danger');
+        return;
+    }
+
+    const deletedIngresos = Number(response?.deleted?.ingresos || 0);
+    const deletedFallas = Number(response?.deleted?.ingreso_fallas || 0);
+    const deletedNotas = Number(response?.deleted?.notas_ingreso || 0);
+    const clientes = Number(response?.clientes_preservados || 0);
+
+    showAlert(
+        `Limpieza completada. Ingresos: ${deletedIngresos}, fallas: ${deletedFallas}, notas: ${deletedNotas}. Clientes preservados: ${clientes}.`,
+        'success'
+    );
+
+    adminActiveTab = 'respaldo';
+    loadPage('admin');
+}
+
 async function loadAdminConfig() {
     const config = await apiCall('/admin/configuracion');
     const tecnicos = await apiCall('/tecnicos');
     const logoNavbarActual = config.logo_navbar_url?.valor || config.logo_url?.valor;
-    const logoTicketActual = config.logo_ticket_url?.valor || config.logo_url?.valor;
     const tecnicoDefaultId = parseInt(config.tecnico_default_id?.valor || '', 10) || null;
-    const paperWidth = parseInt(config.ancho_papel_mm?.valor || '58', 10) || 58;
-    const paperHeight = parseInt(config.largo_papel_mm?.valor || '300', 10) || 300;
-    const paperMargin = parseInt(config.margen_papel_mm?.valor || '0', 10) || 0;
-    const ticketEncabezado = config.ticket_encabezado?.valor || '';
-    const ticketComentarios = config.ticket_comentarios?.valor || '';
-    const escapeHtml = (value) => String(value || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
     
     return `
         <div class="card p-4">
@@ -3494,7 +4549,74 @@ async function loadAdminConfig() {
                     <input type="file" class="form-control" id="logo_navbar_file" accept="image/png,image/jpeg,image/jpg">
                     ${logoNavbarActual ? `<div class="mt-2"><small class="text-muted">Logo navbar actual:</small><br><img src="${logoNavbarActual}" alt="Logo navbar actual" style="max-height: 80px; max-width: 260px; border: 1px solid #ddd; padding: 4px; border-radius: 4px; margin-top: 5px;"></div>` : '<small class="text-muted d-block mt-1">No hay logo de barra cargado aún</small>'}
                 </div>
+                
+                <button type="submit" class="btn btn-primary">
+                    <i class="fas fa-save me-2"></i> Guardar Configuración
+                </button>
+            </form>
+        </div>
+    `;
+}
 
+async function loadAdminPrintConfig() {
+    const config = await apiCall('/admin/configuracion');
+    let workers = [];
+    try {
+        const workersResponse = await apiCall('/print-workers');
+        workers = Array.isArray(workersResponse?.workers) ? workersResponse.workers : [];
+    } catch (_) {
+    }
+    const logoTicketActual = config.logo_ticket_url?.valor || config.logo_url?.valor;
+    const paperWidth = parseInt(config.ancho_papel_mm?.valor || '58', 10) || 58;
+    const paperHeight = parseInt(config.largo_papel_mm?.valor || '300', 10) || 300;
+    const paperMargin = parseInt(config.margen_papel_mm?.valor || '0', 10) || 0;
+    const ticketEncabezado = config.ticket_encabezado?.valor || '';
+    const ticketComentarios = config.ticket_comentarios?.valor || '';
+    const fuenteEncabezado = parseInt(config.ticket_fuente_encabezado_px?.valor || '22', 10) || 22;
+    const fuenteCuerpo = parseInt(config.ticket_fuente_cuerpo_px?.valor || '16', 10) || 16;
+    const fuenteComentarios = parseInt(config.ticket_fuente_comentarios_px?.valor || '15', 10) || 15;
+    const fuentePie = parseInt(config.ticket_fuente_pie_px?.valor || '13', 10) || 13;
+    const targetPrinter = String(config.print_target_printer?.valor || '').trim();
+    const escapeHtml = (value) => String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    const onlineLocalAgents = getOnlinePrintWorkers(workers);
+    const workerOptions = onlineLocalAgents.map((worker) => {
+        const name = String(worker.worker_name || '').trim();
+        if (!name) return '';
+        const selected = name === targetPrinter ? 'selected' : '';
+        const onlineTag = worker.online ? '🟢' : '⚪';
+        const isBrowserWorker = name.toUpperCase().startsWith('BROWSER_');
+        const typeTag = isBrowserWorker ? 'navegador local' : (worker.worker_type === 'backend' ? 'backend' : 'agente local');
+        return `<option value="${escapeHtml(name)}" ${selected}>${onlineTag} ${escapeHtml(name)} (${typeTag})</option>`;
+    }).filter(Boolean).join('');
+    const printerStatusBanner = buildPrintStatusBannerHtml(
+        onlineLocalAgents.map((agent) => ({ worker_name: escapeHtml(agent.worker_name || 'AGENTE LOCAL') }))
+    );
+    const noAgentWarning = buildPrintNoAgentWarningHtml(onlineLocalAgents);
+
+    return `
+        <div class="card p-4">
+            <h5 class="mb-3">Configuración de Impresión</h5>
+
+            <div id="printConnectionStatusWrap">${printerStatusBanner}</div>
+            <div id="printNoAgentWarningWrap">${noAgentWarning}</div>
+
+            <div class="alert alert-info mb-3">
+                <h6 class="alert-heading mb-2">
+                    <i class="fas fa-desktop me-2"></i>Convertir este navegador en impresora local
+                </h6>
+                <small>Si abres esta página en el PC con la impresora USB conectada, presiona el botón de abajo para convertir ese navegador en impresora local del sistema.</small>
+                <div class="mt-2">
+                    <button type="button" class="btn btn-primary btn-sm" onclick="activateThisBrowserAsPrinter()">
+                        <i class="fas fa-check-circle me-2"></i>Usar este navegador como impresora
+                    </button>
+                </div>
+            </div>
+
+            <form id="configPrintForm">
                 <div class="mb-3">
                     <label class="form-label">Logo para Ticket (impresión) (PNG o JPG, máx 5MB)</label>
                     <input type="file" class="form-control" id="logo_ticket_file" accept="image/png,image/jpeg,image/jpg">
@@ -3502,7 +4624,7 @@ async function loadAdminConfig() {
                 </div>
 
                 <hr>
-                <h6 class="mb-3">Configuración de Papel (Ticket)</h6>
+                <h6 class="mb-3">Papel y Márgenes</h6>
                 <div class="row">
                     <div class="col-md-4 mb-3">
                         <label class="form-label">Ancho (mm)</label>
@@ -3518,6 +4640,47 @@ async function loadAdminConfig() {
                     </div>
                 </div>
 
+                <div class="row">
+                    <div class="col-md-9 mb-3">
+                        <label class="form-label">Impresora local predeterminada</label>
+                        <select class="form-select" id="print_target_printer">
+                            <option value="" ${!targetPrinter ? 'selected' : ''}>${onlineLocalAgents.length ? 'Selecciona impresora del local' : 'No hay impresora local conectada'}</option>
+                            ${workerOptions}
+                        </select>
+                        <small class="text-muted">Única opción: al guardar, el sistema imprime automático por cola sin previsualización.</small>
+                    </div>
+                    <div class="col-md-3 mb-3 d-flex align-items-end">
+                        <button type="button" class="btn btn-outline-secondary w-100" onclick="refreshPrintWorkersList()">
+                            <i class="fas fa-rotate me-2"></i>Actualizar lista
+                        </button>
+                    </div>
+                </div>
+
+                <div class="alert alert-success mb-3">
+                    <strong>Modo fijo para empleados:</strong> impresión automática sin previsualización usando la impresora local predeterminada.
+                </div>
+
+                <hr>
+                <h6 class="mb-3">Tamaño de Letra</h6>
+                <div class="row">
+                    <div class="col-md-3 mb-3">
+                        <label class="form-label">Encabezado (px)</label>
+                        <input type="number" class="form-control" id="ticket_fuente_encabezado_px" min="16" max="40" step="1" value="${fuenteEncabezado}">
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <label class="form-label">Cuerpo (px)</label>
+                        <input type="number" class="form-control" id="ticket_fuente_cuerpo_px" min="12" max="30" step="1" value="${fuenteCuerpo}">
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <label class="form-label">Comentarios (px)</label>
+                        <input type="number" class="form-control" id="ticket_fuente_comentarios_px" min="11" max="26" step="1" value="${fuenteComentarios}">
+                    </div>
+                    <div class="col-md-3 mb-3">
+                        <label class="form-label">Pie (px)</label>
+                        <input type="number" class="form-control" id="ticket_fuente_pie_px" min="11" max="26" step="1" value="${fuentePie}">
+                    </div>
+                </div>
+
                 <hr>
                 <h6 class="mb-3">Contenido del Ticket</h6>
                 <div class="mb-3">
@@ -3528,20 +4691,59 @@ async function loadAdminConfig() {
                     <label class="form-label">Comentarios del ticket (una línea por renglón)</label>
                     <textarea class="form-control" id="ticket_comentarios" rows="5" placeholder="Términos y condiciones del ticket">${escapeHtml(ticketComentarios)}</textarea>
                 </div>
-                
+
                 <button type="submit" class="btn btn-primary">
-                    <i class="fas fa-save me-2"></i> Guardar Configuración
+                    <i class="fas fa-save me-2"></i> Guardar Configuración de Impresión
                 </button>
             </form>
         </div>
     `;
 }
 
+async function activateAutoPrintMode() {
+    try {
+        let targetPrinter = document.getElementById('print_target_printer')?.value || '';
+        if (!targetPrinter) {
+            try {
+                const workersResponse = await apiCall('/print-workers');
+                const workers = Array.isArray(workersResponse?.workers) ? workersResponse.workers : [];
+                const preferredWorker = workers.find((worker) => worker.worker_type === 'agent' && worker.online)
+                    || workers.find((worker) => worker.worker_type === 'agent')
+                    || workers.find((worker) => worker.worker_type !== 'browser');
+                targetPrinter = preferredWorker?.worker_name || '';
+            } catch (_) {
+            }
+        }
+
+        const response = await apiCall('/admin/configuracion', {
+            method: 'PUT',
+            body: JSON.stringify({
+                print_dispatch_mode: 'queue_auto',
+                print_backend_auto_enabled: 'false',
+                print_target_printer: targetPrinter
+            })
+        });
+
+        if (response?.success) {
+            if (targetPrinter) {
+                showAlert(`Modo automático activado en: ${targetPrinter}`, 'success');
+            } else {
+                showAlert('Modo automático activado. Define una impresora destino para evitar previsualización en navegador.', 'warning');
+            }
+            loadPage('admin');
+            return;
+        }
+
+        showAlert(response?.error || 'No se pudo activar el modo automático', 'danger');
+    } catch (error) {
+        showAlert(`Error al activar modo automático: ${error.message}`, 'danger');
+    }
+}
+
 async function submitConfig(e) {
     e.preventDefault();
 
     const logoNavbarInput = document.getElementById('logo_navbar_file');
-    const logoTicketInput = document.getElementById('logo_ticket_file');
 
     const uploadLogo = async (file, targetLabel) => {
         if (!file.name.match(/\.(jpg|jpeg|png)$/i)) {
@@ -3609,19 +4811,13 @@ async function submitConfig(e) {
     };
 
     const hasNavbarLogo = logoNavbarInput && logoNavbarInput.files && logoNavbarInput.files.length > 0;
-    const hasTicketLogo = logoTicketInput && logoTicketInput.files && logoTicketInput.files.length > 0;
 
-    if (hasNavbarLogo || hasTicketLogo) {
+    if (hasNavbarLogo) {
         showAlert('Subiendo logos...', 'info');
 
         if (hasNavbarLogo) {
             const okNavbar = await uploadLogo(logoNavbarInput.files[0], 'navbar');
             if (!okNavbar) return;
-        }
-
-        if (hasTicketLogo) {
-            const okTicket = await uploadLogo(logoTicketInput.files[0], 'ticket');
-            if (!okTicket) return;
         }
 
         loadNavbarBrand();
@@ -3636,12 +4832,7 @@ async function submitConfig(e) {
                 telefono_negocio: document.getElementById('telefono_negocio').value,
                 direccion_negocio: document.getElementById('direccion_negocio').value,
                 email_negocio: document.getElementById('email_negocio').value,
-                tecnico_default_id: document.getElementById('tecnico_default_id')?.value || '',
-                ancho_papel_mm: document.getElementById('ancho_papel_mm')?.value || '58',
-                largo_papel_mm: document.getElementById('largo_papel_mm')?.value || '300',
-                margen_papel_mm: document.getElementById('margen_papel_mm')?.value || '0',
-                ticket_encabezado: document.getElementById('ticket_encabezado')?.value || '',
-                ticket_comentarios: document.getElementById('ticket_comentarios')?.value || ''
+                tecnico_default_id: document.getElementById('tecnico_default_id')?.value || ''
             })
         });
         
@@ -3654,6 +4845,124 @@ async function submitConfig(e) {
             }, 800);
         } else {
             showAlert(response.error || 'Error al guardar configuración', 'danger');
+        }
+    } catch (error) {
+        showAlert(`Error al guardar: ${error.message}`, 'danger');
+    }
+}
+
+async function submitPrintConfig(e) {
+    e.preventDefault();
+
+    const logoTicketInput = document.getElementById('logo_ticket_file');
+
+    const uploadLogo = async (file, targetLabel) => {
+        if (!file.name.match(/\.(jpg|jpeg|png)$/i)) {
+            showAlert(`Logo de ${targetLabel}: selecciona un archivo PNG o JPG`, 'warning');
+            return false;
+        }
+
+        if (file.size > 5 * 1024 * 1024) {
+            showAlert(`Logo de ${targetLabel}: el archivo es muy grande (máx 5MB)`, 'warning');
+            return false;
+        }
+
+        const formData = new FormData();
+        formData.append('logo', file);
+
+        try {
+            const logoResponse = await fetch(`${API_BASE}/admin/config/logo/${targetLabel}`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                },
+                body: formData
+            });
+
+            const contentType = logoResponse.headers.get('content-type') || '';
+            const rawBody = await logoResponse.text();
+
+            let parsedBody = null;
+            if (contentType.includes('application/json') || rawBody.trim().startsWith('{')) {
+                try {
+                    parsedBody = JSON.parse(rawBody);
+                } catch (_) {
+                    parsedBody = null;
+                }
+            }
+
+            if (!logoResponse.ok) {
+                const backendError = parsedBody?.error;
+                const looksLikeHtml = rawBody.trim().startsWith('<');
+
+                if (logoResponse.status === 404 || logoResponse.status === 405) {
+                    showAlert(`Error al subir logo de ${targetLabel}: el backend no reconoce esta ruta. Reinicia backend para aplicar los cambios de logos independientes.`, 'danger');
+                    return false;
+                }
+
+                if (backendError) {
+                    showAlert(`Error al subir logo de ${targetLabel}: ${backendError}`, 'danger');
+                    return false;
+                }
+
+                if (looksLikeHtml) {
+                    showAlert(`Error al subir logo de ${targetLabel}: el backend devolvió HTML en vez de JSON (status ${logoResponse.status}).`, 'danger');
+                    return false;
+                }
+
+                showAlert(`Error al subir logo de ${targetLabel}: status ${logoResponse.status}`, 'danger');
+                return false;
+            }
+
+            return true;
+        } catch (error) {
+            showAlert(`Error de red al subir logo de ${targetLabel}: ${error.message}`, 'danger');
+            return false;
+        }
+    };
+
+    const hasTicketLogo = logoTicketInput && logoTicketInput.files && logoTicketInput.files.length > 0;
+
+    if (hasTicketLogo) {
+        showAlert('Subiendo logo de ticket...', 'info');
+        const okTicket = await uploadLogo(logoTicketInput.files[0], 'ticket');
+        if (!okTicket) return;
+    }
+
+    try {
+        const selectedPrinter = (document.getElementById('print_target_printer')?.value || '').trim();
+        if (!selectedPrinter) {
+            showAlert('Debes seleccionar la impresora local predeterminada', 'warning');
+            return;
+        }
+
+        const response = await apiCall('/admin/configuracion', {
+            method: 'PUT',
+            body: JSON.stringify({
+                ancho_papel_mm: document.getElementById('ancho_papel_mm')?.value || '58',
+                largo_papel_mm: document.getElementById('largo_papel_mm')?.value || '300',
+                margen_papel_mm: document.getElementById('margen_papel_mm')?.value || '0',
+                print_dispatch_mode: 'queue_auto',
+                print_target_printer: selectedPrinter,
+                print_backend_auto_enabled: 'false',
+                print_backend_host: '',
+                print_backend_port: '9100',
+                ticket_fuente_encabezado_px: document.getElementById('ticket_fuente_encabezado_px')?.value || '22',
+                ticket_fuente_cuerpo_px: document.getElementById('ticket_fuente_cuerpo_px')?.value || '16',
+                ticket_fuente_comentarios_px: document.getElementById('ticket_fuente_comentarios_px')?.value || '15',
+                ticket_fuente_pie_px: document.getElementById('ticket_fuente_pie_px')?.value || '13',
+                ticket_encabezado: document.getElementById('ticket_encabezado')?.value || '',
+                ticket_comentarios: document.getElementById('ticket_comentarios')?.value || ''
+            })
+        });
+
+        if (response.success) {
+            showAlert('Impresora local predeterminada guardada. Impresión automática sin previsualización activada.', 'success');
+            setTimeout(() => {
+                loadPage('admin');
+            }, 800);
+        } else {
+            showAlert(response.error || 'Error al guardar configuración de impresión', 'danger');
         }
     } catch (error) {
         showAlert(`Error al guardar: ${error.message}`, 'danger');
@@ -4250,39 +5559,52 @@ function showConfirmModal(message, options = {}) {
     });
 }
 
-async function printTicket(ingresoId) {
+async function printTicket(ingresoId, paymentMeta = null) {
     if (printingIngresos.has(ingresoId)) {
         return;
     }
     printingIngresos.add(ingresoId);
 
     try {
-        showAlert('Generando ticket de impresión...', 'info');
-        
-        const response = await apiCall(`/ingresos/${ingresoId}/ticket`);
-        
-        if (response.error) {
-            showAlert('Error: ' + response.error, 'danger');
+        let targetPrinter = '';
+        try {
+            const publicConfig = await apiCall('/configuracion/publica');
+            targetPrinter = String(publicConfig?.print_target_printer || '').trim();
+        } catch (_) {
+        }
+
+        if (!targetPrinter) {
+            showAlert('No hay impresora local predeterminada configurada. Ve a Admin → Impresión.', 'warning');
             return;
         }
-        
-        if (!response.ticket_data) {
-            showAlert('No se pudo generar el ticket', 'danger');
+
+        const queueResponse = await apiCall('/print-jobs', {
+            method: 'POST',
+            body: JSON.stringify({
+                ingreso_id: ingresoId,
+                target_printer: targetPrinter,
+                payload: paymentMeta ? { payment_meta: paymentMeta } : {}
+            })
+        });
+
+        if (queueResponse && queueResponse.success) {
+            showAlert(`Ticket enviado a la cola de impresión: ${targetPrinter}`, 'success');
             return;
         }
-        
-        simulatePrint(response);
+
+        showAlert('No se pudo enviar a la cola de impresión remota. No se hará impresión local para evitar previsualización.', 'danger');
+        return;
         
     } catch (error) {
         console.error('Error en printTicket:', error);
-        showAlert('Error al generar ticket: ' + error.message, 'danger');
+        showAlert('Error al enviar a cola de impresión: ' + error.message, 'danger');
     } finally {
         printingIngresos.delete(ingresoId);
     }
 }
 
 // Función auxiliar para imprimir ticket en iframe oculto (sin popup)
-function simulatePrint(ticketData) {
+function simulatePrint(ticketData, paymentMeta = null) {
     const ingreso = ticketData.ingreso || {};
     const negocio = ticketData.negocio || {};
     const nombreNegocio = negocio.nombre_negocio || 'CELUPRO';
@@ -4311,7 +5633,33 @@ function simulatePrint(ticketData) {
     const bandejaSimTexto = yesNo(ingreso.bandeja_sim);
     const colorBandejaSimTexto = ingreso.bandeja_sim ? clean(ingreso.color_bandeja_sim) : '';
     const valorTotal = Number(ingreso.valor_total || 0);
+    const pagoInfo = paymentMeta || ticketData.quick_pago || null;
+    const tipoPago = String(pagoInfo?.tipo_pago || '').trim().toUpperCase();
+    const estadoPago = String(pagoInfo?.estado_pago || ingreso.estado_pago || '').trim().toUpperCase();
+    const estadoIngreso = String(ingreso.estado_ingreso || '').trim().toLowerCase();
+    const montoRecibido = Number(pagoInfo?.monto_recibido || 0);
+    const devueltaPago = Number(pagoInfo?.devuelta || 0);
+    const faltantePago = Number(pagoInfo?.faltante || 0);
+    const valorCobrarPago = Number(pagoInfo?.valor_cobrar || valorTotal || 0);
     const fallas = Array.isArray(ingreso.fallas) ? ingreso.fallas : [];
+    const receptorTipo = String(pagoInfo?.receptor_tipo || 'propietario').trim().toLowerCase();
+    const receptorNombre = String(pagoInfo?.receptor_nombre || '').trim();
+    const receptorCedula = String(pagoInfo?.receptor_cedula || '').trim();
+    const fallasReparadas = fallas
+        .filter((f) => String(f.estado_falla || '').toLowerCase() === 'reparada')
+        .map((f) => cleanFallaName(f.nombre))
+        .filter(Boolean);
+    const fallaReparadaTexto = fallasReparadas.length
+        ? fallasReparadas.join(', ')
+        : (fallas.length ? fallas.map((f) => cleanFallaName(f.nombre)).filter(Boolean).join(', ') : 'N/A');
+    const fechaEntregaPago = clean(ingreso.fecha_entrega)
+        ? new Date(ingreso.fecha_entrega).toLocaleString('es-CO')
+        : new Date().toLocaleString('es-CO');
+    const garantiaTexto = ingreso.garantia ? 'SI' : 'NO';
+    const pagoAnticipadoPendienteReparacion = estadoPago === 'PAGADO' && !['reparado', 'entregado'].includes(estadoIngreso);
+    const avisoPendienteReparacionHtml = pagoAnticipadoPendienteReparacion
+        ? '<div class="section-title">ESTADO</div><div><strong>PENDIENTE DE REPARACION</strong></div>'
+        : '';
     const fallasTexto = fallas.length
         ? fallas.map(f => `• ${cleanFallaName(f.nombre) || 'Falla'}`).join('<br>')
         : clean(ingreso.falla_general);
@@ -4319,16 +5667,23 @@ function simulatePrint(ticketData) {
         const num = Number(value);
         return Number.isFinite(num) ? Math.round(num) : fallback;
     };
+    const parsePx = (value, fallback, min, max) => {
+        const num = Number(value);
+        if (!Number.isFinite(num)) return fallback;
+        return Math.min(max, Math.max(min, Math.round(num)));
+    };
     const paperWidthMm = Math.min(80, Math.max(48, parseMm(ticketData.paper_width_mm, 58)));
     const paperHeightMm = Math.min(1000, Math.max(120, parseMm(ticketData.paper_height_mm, 300)));
     const pageMarginMm = Math.min(5, Math.max(0, parseMm(ticketData.paper_margin_mm, 0)));
     const pageContentWidthMm = Math.max(20, paperWidthMm - (pageMarginMm * 2));
     const paperMaxWidthPx = Math.round((pageContentWidthMm / 25.4) * 96);
-    const baseFontSizePx = paperWidthMm >= 76 ? 14 : 13;
-    const smallFontSizePx = Math.max(11, baseFontSizePx - 1);
-    const headerFontSizePx = baseFontSizePx + 4;
-    const numeroFontSizePx = baseFontSizePx + 8;
-    const lineHeight = 1.28;
+    const defaultBaseFontSizePx = paperWidthMm >= 76 ? 16 : 15;
+    const baseFontSizePx = parsePx(negocio.ticket_fuente_cuerpo_px, defaultBaseFontSizePx, 12, 30);
+    const headerFontSizePx = parsePx(negocio.ticket_fuente_encabezado_px, baseFontSizePx + 6, 16, 40);
+    const smallFontSizePx = parsePx(negocio.ticket_fuente_pie_px, Math.max(13, baseFontSizePx - 1), 11, 26);
+    const commentsFontSizePx = parsePx(negocio.ticket_fuente_comentarios_px, Math.max(smallFontSizePx, 12), 11, 26);
+    const numeroFontSizePx = baseFontSizePx + 10;
+    const lineHeight = 1.35;
     const defaultComentarios = [
         'PANTALLAS NO TIENEN GARANTIA YA QUE ES UN CRISTAL Y DEPENDE DEL CUIDADOS DEL CLIENTE.',
         'LA CONTRASEÑA SE SOLICITA PARA HACER REVISION DE SU TELEFONO Y ASI GARANTIZAR QUE SU FUNCIONAMIENTO QUEDÓ EN OPTIMAS CONDICIONES.',
@@ -4345,6 +5700,88 @@ function simulatePrint(ticketData) {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+    const pagoDetalleHtml = tipoPago
+        ? `
+            <div class="section-title">PAGO</div>
+            <div>Tipo: ${escapeHtml(tipoPago)}</div>
+            <div>Estado: ${escapeHtml(estadoPago || 'N/A')}</div>
+            <div>Valor cobrado: $ ${valorCobrarPago.toLocaleString('es-CO')}</div>
+            ${tipoPago === 'EFECTIVO' ? `<div>Recibido: $ ${montoRecibido.toLocaleString('es-CO')}</div>` : ''}
+            ${tipoPago === 'EFECTIVO' ? `<div>Devuelta: $ ${devueltaPago.toLocaleString('es-CO')}</div>` : ''}
+            ${tipoPago === 'EFECTIVO' ? `<div>Faltante: $ ${faltantePago.toLocaleString('es-CO')}</div>` : ''}
+        `
+        : '';
+
+    if (pagoInfo) {
+        const valorPagado = valorCobrarPago;
+        const recibido = tipoPago === 'EFECTIVO' ? montoRecibido : valorPagado;
+        const cambio = tipoPago === 'EFECTIVO' ? devueltaPago : 0;
+        const fechaPago = new Date().toLocaleString('es-CO');
+        const entregadoA = pagoAnticipadoPendienteReparacion
+            ? 'PENDIENTE DE REPARACION'
+            : receptorTipo === 'tercero'
+            ? `${escapeHtml(receptorNombre || 'N/A')} · CC ${escapeHtml(receptorCedula || 'N/A')}`
+            : 'PROPIETARIO';
+
+        const paymentHtml = `
+            <html>
+            <head>
+                <title>Ticket de Pago - ${ticketData.numero_ingreso}</title>
+                <style>
+                    @page { size: ${paperWidthMm}mm ${paperHeightMm}mm; margin: ${pageMarginMm}mm; }
+                    body {
+                        font-family: 'Arial Narrow', 'Roboto Condensed', 'Segoe UI', Arial, sans-serif;
+                        margin: 0;
+                        padding: 0;
+                        width: ${pageContentWidthMm}mm;
+                        max-width: ${paperMaxWidthPx}px;
+                        font-size: ${baseFontSizePx}px;
+                        font-weight: 700;
+                        line-height: ${lineHeight};
+                    }
+                    .ticket { padding: 12px 10px; }
+                    .header { text-align:center; font-weight:800; font-size:${headerFontSizePx}px; margin-bottom:10px; }
+                    .numero { font-size:${numeroFontSizePx}px; font-weight:800; text-align:center; margin:8px 0; }
+                    .section-title { margin-top:8px; margin-bottom:4px; font-weight:800; }
+                    .line { border-top:1px dashed #000; margin:8px 0; }
+                    .small { font-size:${smallFontSizePx}px; }
+                </style>
+            </head>
+            <body>
+                <div class="ticket">
+                    <div class="header">${escapeHtml(nombreNegocio)}</div>
+                    <div class="numero">Ticket de Pago #${escapeHtml(ticketData.numero_ingreso)}</div>
+
+                    <div class="section-title">CLIENTE</div>
+                    <div>${escapeHtml(clienteNombre || 'N/A')}</div>
+                    <div>Cédula: ${escapeHtml(clean(ingreso.cliente_cedula) || 'N/A')}</div>
+                    <div>Tel: ${escapeHtml(clean(ingreso.cliente_telefono) || 'N/A')}</div>
+
+                    <div class="section-title">DETALLE</div>
+                    <div>Falla reparada: ${escapeHtml(fallaReparadaTexto || 'N/A')}</div>
+                    <div>Garantía: ${garantiaTexto}</div>
+
+                    <div class="section-title">PAGO</div>
+                    <div>Tipo pago: ${escapeHtml(tipoPago || 'N/A')}</div>
+                    <div>Valor pagado: $ ${valorPagado.toLocaleString('es-CO')}</div>
+                    <div>Valor recibido: $ ${recibido.toLocaleString('es-CO')}</div>
+                    <div>Cambio: $ ${cambio.toLocaleString('es-CO')}</div>
+                    ${avisoPendienteReparacionHtml}
+
+                    <div class="section-title">${pagoAnticipadoPendienteReparacion ? 'SEGUIMIENTO' : 'ENTREGA'}</div>
+                    <div>${pagoAnticipadoPendienteReparacion ? 'Fecha/Hora de pago' : 'Fecha/Hora entregado'}: ${escapeHtml(pagoAnticipadoPendienteReparacion ? fechaPago : fechaEntregaPago)}</div>
+                    <div>${pagoAnticipadoPendienteReparacion ? 'Estado equipo' : 'Entregado a'}: ${entregadoA}</div>
+
+                    <div class="line"></div>
+                    <div class="small">Firma quien recibe: ______________________</div>
+                    <div class="small">Impresión: ${new Date().toLocaleString('es-CO')}</div>
+                </div>
+            </body>
+            </html>
+        `;
+
+        return printTicketHtml(paymentHtml, paperWidthMm, paperHeightMm, pageMarginMm);
+    }
 
     const html = `
         <html>
@@ -4364,13 +5801,15 @@ function simulatePrint(ticketData) {
                 }
 
                 body {
-                    font-family: monospace;
+                    font-family: 'Arial Narrow', 'Roboto Condensed', 'Segoe UI', Arial, sans-serif;
                     margin: 0;
                     padding: 0;
                     width: ${pageContentWidthMm}mm;
                     min-height: ${paperHeightMm}mm;
                     max-width: ${paperMaxWidthPx}px;
                     font-size: ${baseFontSizePx}px;
+                    font-weight: 700;
+                    letter-spacing: 0.1px;
                     line-height: ${lineHeight};
                     -webkit-print-color-adjust: exact;
                     print-color-adjust: exact;
@@ -4414,6 +5853,11 @@ function simulatePrint(ticketData) {
                 }
                 .small {
                     font-size: ${smallFontSizePx}px;
+                    font-weight: 700;
+                }
+                .comment-line {
+                    font-size: ${commentsFontSizePx}px;
+                    font-weight: 700;
                 }
                     
 
@@ -4463,10 +5907,12 @@ function simulatePrint(ticketData) {
                 <div>Botones: ${estadoBotonesDetalle}</div>
                 <div><strong>Detalle:</strong> ${clean(ingreso.falla_general)}</div>
                 <div>Valor reparación: $ ${valorTotal.toLocaleString('es-CO')}</div>
+                ${pagoDetalleHtml}
+                ${avisoPendienteReparacionHtml}
                 <div class="section-title">Fallas seleccionadas</div>
                 <div class="small">${fallasTexto}</div>
                 <div class="section-title">Comentarios</div>
-                ${comentariosFinales.map((line) => `<div class="small"><strong>${escapeHtml(line)}</strong></div>`).join('')}
+                ${comentariosFinales.map((line) => `<div class="comment-line"><strong>${escapeHtml(line)}</strong></div>`).join('')}
 
                 <div class="line"></div>
                 <div class="line"></div>
@@ -4488,6 +5934,8 @@ function simulatePrint(ticketData) {
                 <div>Visor/Glass partido: ${yesNo(ingreso.visor_partido || ingreso.estado_display)}</div>
                 <div>Botones: ${estadoBotonesDetalle}</div>
                 <div>Valor: $ ${valorTotal.toLocaleString('es-CO')}</div>
+                ${pagoDetalleHtml}
+                ${avisoPendienteReparacionHtml}
                 <div class="section-title">Detalle:</div>
                 <div class="small">${clean(ingreso.falla_general)}</div>
                 <div class="section-title">Fallas seleccionadas:</div>
@@ -4501,6 +5949,10 @@ function simulatePrint(ticketData) {
         </html>
     `;
 
+    return printTicketHtml(html, paperWidthMm, paperHeightMm, pageMarginMm);
+}
+
+function printTicketHtml(html, paperWidthMm, paperHeightMm, pageMarginMm) {
     const iframe = document.createElement('iframe');
     iframe.style.position = 'fixed';
     iframe.style.right = '0';
@@ -6220,10 +7672,26 @@ function syncValorReparacionFromFallas() {
     const valorInput = document.getElementById('valor_reparacion');
     if (!valorInput) return;
 
-    const totalSugerido = Array.from(document.querySelectorAll('.falla-checkbox:checked'))
-        .reduce((sum, cb) => sum + Number(cb.dataset.precio || 0), 0);
+    const totalSugerido = getSelectedFallasTotal();
 
     valorInput.value = totalSugerido > 0 ? formatNumberCO(Math.round(totalSugerido)) : '';
+}
+
+function getSelectedFallasTotal() {
+    const selected = Array.from(document.querySelectorAll('.falla-checkbox:checked'));
+    const total = selected.reduce((sum, checkbox) => {
+        let price = Number(checkbox.dataset.precio || 0);
+
+        if (!Number.isFinite(price) || price <= 0) {
+            const item = checkbox.closest('.falla-item');
+            const priceText = item?.querySelector('.falla-price')?.textContent || '';
+            price = parseMonetaryValue(priceText);
+        }
+
+        return sum + (Number.isFinite(price) ? price : 0);
+    }, 0);
+
+    return Math.round(total || 0);
 }
 
 function parseMonetaryValue(value) {
@@ -6242,7 +7710,7 @@ function updateFallasSelectedCount() {
 
     const selected = Array.from(document.querySelectorAll('.falla-checkbox:checked'));
     const selectedCount = selected.length;
-    const totalSugerido = selected.reduce((sum, cb) => sum + Number(cb.dataset.precio || 0), 0);
+    const totalSugerido = getSelectedFallasTotal();
     const texto = selectedCount === 1 ? '1 seleccionada' : `${selectedCount} seleccionadas`;
     countEl.textContent = texto;
     totalEl.textContent = `$ ${Number(totalSugerido || 0).toLocaleString('es-CO')}`;

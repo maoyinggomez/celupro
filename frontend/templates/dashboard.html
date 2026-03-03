@@ -16,20 +16,13 @@
             <button class="btn btn-outline-light btn-sm d-md-none mobile-sidebar-toggle" type="button" data-bs-toggle="offcanvas" data-bs-target="#mobileSidebar" aria-controls="mobileSidebar" aria-label="Abrir menú">
                 <i class="fas fa-bars"></i>
             </button>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Alternar navegación">
-                <span class="navbar-toggler-icon"></span>
-            </button>
             <a class="navbar-brand fw-bold navbar-brand-centered" id="navbarBrand" href="/">
                 <img id="navbarBrandImg" src="/static/logos/logo.png?v={{ cache_buster }}" alt="Logo" class="navbar-logo-img">
             </a>
-            <div class="collapse navbar-collapse justify-content-end" id="navbarNav">
-                <ul class="navbar-nav">
-                    <li class="nav-item">
-                        <a class="nav-link" href="#" id="logoutBtn">
-                            <i class="fas fa-sign-out-alt"></i><span class="logout-label ms-1">Salir</span>
-                        </a>
-                    </li>
-                </ul>
+            <div class="ms-auto d-flex align-items-center">
+                <a class="nav-link" href="#" id="logoutBtn" aria-label="Salir">
+                    <i class="fas fa-sign-out-alt"></i><span class="logout-label ms-1">Salir</span>
+                </a>
             </div>
         </div>
     </nav>

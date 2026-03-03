@@ -171,6 +171,99 @@ python3 scripts/manual_tests/test_full_flow.py
 python3 scripts/manual_tests/test_ticket_config.py
 ```
 
+### 🖨️ Impresión remota automática (gratis)
+
+Para imprimir en la impresora del local desde cualquier dispositivo:
+
+1. Deja backend y frontend corriendo normalmente.
+2. En el **PC del local** (con la impresora conectada), ejecuta el agente:
+
+```bash
+cd /ruta/celupro-clone
+python3 scripts/maintenance/print_agent.py \
+    --base-url http://127.0.0.1:5001/api \
+    --usuario admin \
+    --password admin123 \
+    --printer "NOMBRE_IMPRESORA"
+```
+
+Notas:
+- Si omites `--printer`, usa la impresora predeterminada del sistema.
+- En Windows para impresión RAW instala: `pip install pywin32`.
+- El agente toma trabajos de la cola y los imprime al instante en el local.
+- Desde la app, al presionar imprimir, se envía a cola remota automáticamente.
+
+### Sin previsualización en navegador (modo silencioso)
+
+Si usas el modo de impresión desde navegador (sin agente), **JavaScript no puede ocultar el cuadro de impresión por sí solo**.
+Para impresión directa debes abrir el navegador del PC local con `--kiosk-printing`:
+
+- macOS (Chrome):
+
+```bash
+open -a "Google Chrome" --args --kiosk-printing --app="http://127.0.0.1:3000"
+```
+
+- Windows (Chrome):
+
+```bat
+start chrome --kiosk-printing --app="http://127.0.0.1:3000"
+```
+
+Luego, en Admin → Impresión:
+- activa `Imprimir de una vez (sin previsualización, requiere kiosk)`
+- pulsa `Guardar configuración`
+- deja `Modo impresora del local` en `Activar`
+
+### Windows local (recomendado): impresión directa automática sin tocar el navegador
+
+Si el PC del local es Windows, usa el agente como tarea programada de inicio de sesión (una sola vez):
+
+1) En el PC Windows abre PowerShell dentro de la carpeta del proyecto.
+
+2) Ejecuta:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\maintenance\install_print_agent_windows.ps1 \
+    -ApiUrl "http://127.0.0.1:5001/api" \
+    -Usuario "admin" \
+    -Password "admin123" \
+    -Printer "NOMBRE_IMPRESORA"
+```
+
+O más simple (doble clic, sin comandos):
+
+- Ejecuta `scripts/maintenance/install_print_agent_windows.bat`
+
+3) En Admin → Impresión deja `Imprimir inmediatamente en impresora del local (cola)`.
+
+Con esto ya no depende de la previsualización del navegador y no tendrás que configurarlo cada rato.
+
+Para desinstalar:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\maintenance\uninstall_print_agent_windows.ps1
+```
+
+También disponible por doble clic:
+
+- `scripts/maintenance/uninstall_print_agent_windows.bat`
+
+### Sin instalar nada en el PC del local (impresora en red)
+
+Si la impresora térmica tiene IP de red (Ethernet/WiFi), puedes imprimir automático sin instalar agente en Windows:
+
+1) En Admin → Impresión:
+- `Modo al imprimir ticket`: `Imprimir inmediatamente en impresora del local (cola)`
+- `Impresión automática por red (sin PC local)`: `Sí`
+- `IP impresora de red`: ejemplo `192.168.1.50`
+- `Puerto`: `9100` (normalmente)
+- Guardar configuración
+
+2) Deja backend corriendo. El backend consume la cola y envía ESC/POS directo a la impresora.
+
+Nota: este modo no depende del navegador ni muestra previsualización.
+
 ## 🗺️ Flujos principales
 
 ### Crear ingreso (Empleado)

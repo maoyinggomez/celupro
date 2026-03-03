@@ -18,8 +18,10 @@ class ThermalTicket:
     SET_ALIGN_RIGHT = b'\x1b\x61\x02'  # Alinear a la derecha
     BOLD_ON = b'\x1b\x45\x01'  # Negrita activada
     BOLD_OFF = b'\x1b\x45\x00'  # Negrita desactivada
-    DOUBLE_HEIGHT = b'\x1d\x21\x11'  # Alto doble
-    DOUBLE_WIDTH = b'\x1d\x21\x10'  # Ancho doble
+    DOUBLE_STRIKE_ON = b'\x1b\x47\x01'  # Trazo reforzado
+    DOUBLE_STRIKE_OFF = b'\x1b\x47\x00'  # Trazo normal
+    MEDIUM_HEIGHT = b'\x1d\x21\x01'  # Alto doble (ancho normal)
+    DOUBLE_SIZE = b'\x1d\x21\x11'  # Alto y ancho doble
     RESET_SIZE = b'\x1d\x21\x00'  # Tamaño normal
     FEED_LINE = b'\x0a'  # Salto de línea
     PAPER_CUT = b'\x1d\x56\x01'  # Corte parcial de papel
@@ -33,7 +35,7 @@ class ThermalTicket:
         self.content = bytearray()
         self.content.extend(self.INIT)
     
-    def add_text(self, text, size='normal', align='left', bold=False):
+    def add_text(self, text, size='medium', align='left', bold=True):
         """
         Agrega texto al ticket
         size: 'normal', 'double', 'large'
@@ -49,9 +51,10 @@ class ThermalTicket:
             self.content.extend(self.SET_ALIGN_LEFT)
         
         # Tamaño
-        if size == 'double':
-            self.content.extend(self.DOUBLE_HEIGHT)
-            self.content.extend(self.DOUBLE_WIDTH)
+        if size == 'medium':
+            self.content.extend(self.MEDIUM_HEIGHT)
+        elif size == 'double':
+            self.content.extend(self.DOUBLE_SIZE)
         elif size == 'large':
             # Tamaño grande (combinación)
             self.content.extend(b'\x1d\x21\x22')
@@ -59,6 +62,7 @@ class ThermalTicket:
         # Negrita
         if bold:
             self.content.extend(self.BOLD_ON)
+            self.content.extend(self.DOUBLE_STRIKE_ON)
         
         # Texto
         self.content.extend(text.encode('utf-8'))
@@ -67,7 +71,8 @@ class ThermalTicket:
         # Reset de formato
         if bold:
             self.content.extend(self.BOLD_OFF)
-        if size in ['double', 'large']:
+            self.content.extend(self.DOUBLE_STRIKE_OFF)
+        if size in ['medium', 'double', 'large']:
             self.content.extend(self.RESET_SIZE)
         
         self.content.extend(self.SET_ALIGN_LEFT)
@@ -79,8 +84,18 @@ class ThermalTicket:
         self.content.extend(self.FEED_LINE)
         self.content.extend(self.SET_ALIGN_LEFT)
     
-    def add_table_row(self, left, right, separator=' ', width=32):
+    def add_table_row(self, left, right, separator=' ', width=32, size='medium', bold=True):
         """Agrega una fila de tabla (dos columnas)"""
+        if size == 'medium':
+            self.content.extend(self.MEDIUM_HEIGHT)
+        elif size == 'double':
+            self.content.extend(self.DOUBLE_SIZE)
+        elif size == 'large':
+            self.content.extend(b'\x1d\x21\x22')
+
+        if bold:
+            self.content.extend(self.BOLD_ON)
+
         # Calcular espacios
         total_len = len(left) + len(right)
         spaces_needed = width - total_len
@@ -90,6 +105,11 @@ class ThermalTicket:
         row = left + (separator * spaces_needed) + right
         self.content.extend(row.encode('utf-8'))
         self.content.extend(self.FEED_LINE)
+
+        if bold:
+            self.content.extend(self.BOLD_OFF)
+        if size in ['medium', 'double', 'large']:
+            self.content.extend(self.RESET_SIZE)
     
     def add_logo(self, image_path, width=200, height=100):
         """

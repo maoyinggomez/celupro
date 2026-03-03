@@ -78,7 +78,7 @@ class IngresoFalla:
                 SUM(CASE WHEN estado_falla = 'pendiente' THEN 1 ELSE 0 END) AS pendientes,
                 SUM(CASE WHEN estado_falla = 'reparada' THEN 1 ELSE 0 END) AS reparadas,
                 SUM(CASE WHEN estado_falla = 'no_reparable' THEN 1 ELSE 0 END) AS no_reparables,
-                COALESCE(SUM(CASE WHEN estado_falla = 'reparada' THEN valor_reparacion ELSE 0 END), 0) AS total_reparado
+                COALESCE(SUM(valor_reparacion), 0) AS total_valor
             FROM ingreso_fallas
             WHERE ingreso_id = ?
             ''',
@@ -92,7 +92,7 @@ class IngresoFalla:
 
         db.execute_update(
             "UPDATE ingresos SET valor_total = ? WHERE id = ?",
-            (stats['total_reparado'], ingreso_id)
+            (stats['total_valor'], ingreso_id)
         )
 
         ingreso = db.execute_single("SELECT estado_ingreso FROM ingresos WHERE id = ?", (ingreso_id,))
@@ -110,6 +110,8 @@ class IngresoFalla:
         reparadas = int(stats['reparadas'] or 0)
 
         if total_fallas == 0:
+            nuevo_estado = 'pendiente'
+        elif pendientes == total_fallas:
             nuevo_estado = 'pendiente'
         elif pendientes > 0:
             nuevo_estado = 'en_reparacion'

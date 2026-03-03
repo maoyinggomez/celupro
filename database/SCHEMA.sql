@@ -122,6 +122,34 @@ CREATE TABLE IF NOT EXISTS configuracion (
     fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Tabla de clientes persistentes
+CREATE TABLE IF NOT EXISTS clientes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cedula TEXT UNIQUE NOT NULL,
+    nombre TEXT NOT NULL,
+    apellido TEXT NOT NULL,
+    telefono TEXT,
+    direccion TEXT,
+    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Cola de trabajos de impresión remota
+CREATE TABLE IF NOT EXISTS print_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ingreso_id INTEGER NOT NULL,
+    requested_by INTEGER,
+    payload_json TEXT,
+    status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'done', 'error')),
+    attempts INTEGER DEFAULT 0,
+    printer_name TEXT,
+    last_error TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    claimed_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    FOREIGN KEY (ingreso_id) REFERENCES ingresos(id) ON DELETE CASCADE,
+    FOREIGN KEY (requested_by) REFERENCES usuarios(id)
+);
+
 -- ÍNDICES PARA RENDIMIENTO
 CREATE INDEX idx_usuarios_rol ON usuarios(rol);
 CREATE INDEX idx_usuarios_activo ON usuarios(activo);
@@ -133,6 +161,8 @@ CREATE INDEX idx_ingresos_fecha ON ingresos(fecha_ingreso);
 CREATE INDEX idx_ingreso_fallas_ingreso ON ingreso_fallas(ingreso_id);
 CREATE INDEX idx_ingreso_fallas_falla ON ingreso_fallas(falla_id);
 CREATE INDEX idx_notas_ingreso ON notas_ingreso(ingreso_id);
+CREATE UNIQUE INDEX idx_clientes_cedula ON clientes(cedula);
+CREATE INDEX idx_print_jobs_status_created ON print_jobs(status, created_at);
 
 -- VISTAS ÚTILES (Opcional)
 -- Ingreso completo con datos relacionados

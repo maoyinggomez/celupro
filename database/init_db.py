@@ -150,6 +150,49 @@ def init_db():
         fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+
+    # Tabla de clientes persistentes
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS clientes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cedula TEXT UNIQUE NOT NULL,
+        nombre TEXT NOT NULL,
+        apellido TEXT NOT NULL,
+        telefono TEXT,
+        direccion TEXT,
+        fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS print_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ingreso_id INTEGER NOT NULL,
+        requested_by INTEGER,
+        payload_json TEXT,
+        target_printer TEXT,
+        status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'done', 'error')),
+        attempts INTEGER DEFAULT 0,
+        printer_name TEXT,
+        last_error TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        claimed_at TIMESTAMP,
+        completed_at TIMESTAMP,
+        FOREIGN KEY (ingreso_id) REFERENCES ingresos(id) ON DELETE CASCADE,
+        FOREIGN KEY (requested_by) REFERENCES usuarios(id)
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS print_workers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        worker_name TEXT UNIQUE NOT NULL,
+        worker_type TEXT DEFAULT 'agent' CHECK(worker_type IN ('agent', 'browser', 'backend')),
+        printer_name TEXT,
+        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
     
     conn.commit()
 
@@ -296,6 +339,11 @@ def insert_default_data(cursor, conn):
         ('ancho_papel_mm', '58', 'number'),
         ('largo_papel_mm', '300', 'number'),
         ('margen_papel_mm', '0', 'number'),
+        ('print_dispatch_mode', 'queue_auto', 'text'),
+        ('print_target_printer', '', 'text'),
+        ('print_backend_auto_enabled', 'false', 'text'),
+        ('print_backend_host', '', 'text'),
+        ('print_backend_port', '9100', 'number'),
         ('backup_interval_hours', '24', 'number'),
         ('ticket_encabezado', '', 'text'),
         ('ticket_comentarios', 'PANTALLAS NO TIENEN GARANTIA YA QUE ES UN CRISTAL Y DEPENDE DEL CUIDADOS DEL CLIENTE.\nLA CONTRASEÑA SE SOLICITA PARA HACER REVISION DE SU TELEFONO Y ASI GARANTIZAR QUE SU FUNCIONAMIENTO QUEDÓ EN OPTIMAS CONDICIONES.\nPASADOS 60 DIAS NO SE RESPONDE POR EQUIPOS ABANDONADOS.', 'text')
@@ -380,6 +428,70 @@ def ensure_schema_updates(cursor, conn):
     if 'orden' not in columnas_fallas:
         cursor.execute("ALTER TABLE fallas_catalogo ADD COLUMN orden INTEGER DEFAULT 0")
 
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS clientes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cedula TEXT UNIQUE NOT NULL,
+            nombre TEXT NOT NULL,
+            apellido TEXT NOT NULL,
+            telefono TEXT,
+            direccion TEXT,
+            fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_cedula ON clientes(cedula)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_print_jobs_status_created ON print_jobs(status, created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_print_workers_last_seen ON print_workers(last_seen)")
+
+    cursor.execute("PRAGMA table_info(print_jobs)")
+    columnas_print_jobs = {row[1] for row in cursor.fetchall()}
+    if 'target_printer' not in columnas_print_jobs:
+        cursor.execute("ALTER TABLE print_jobs ADD COLUMN target_printer TEXT")
+
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS print_workers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            worker_name TEXT UNIQUE NOT NULL,
+            worker_type TEXT DEFAULT 'agent' CHECK(worker_type IN ('agent', 'browser', 'backend')),
+            printer_name TEXT,
+            last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+
+    cursor.execute(
+        '''
+        INSERT INTO clientes (cedula, nombre, apellido, telefono, direccion, fecha_actualizacion)
+        SELECT
+            REPLACE(REPLACE(REPLACE(UPPER(TRIM(i.cliente_cedula)), '.', ''), '-', ''), ' ', '') AS cedula_norm,
+            UPPER(TRIM(i.cliente_nombre)) AS nombre,
+            UPPER(TRIM(i.cliente_apellido)) AS apellido,
+            UPPER(TRIM(COALESCE(i.cliente_telefono, ''))) AS telefono,
+            UPPER(TRIM(COALESCE(i.cliente_direccion, ''))) AS direccion,
+            CURRENT_TIMESTAMP
+        FROM ingresos i
+        WHERE i.id = (
+            SELECT i2.id
+            FROM ingresos i2
+            WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(i2.cliente_cedula)), '.', ''), '-', ''), ' ', '')
+                  = REPLACE(REPLACE(REPLACE(UPPER(TRIM(i.cliente_cedula)), '.', ''), '-', ''), ' ', '')
+            ORDER BY datetime(i2.fecha_ingreso) DESC, i2.id DESC
+            LIMIT 1
+        )
+        ON CONFLICT(cedula) DO UPDATE SET
+            nombre = excluded.nombre,
+            apellido = excluded.apellido,
+            telefono = excluded.telefono,
+            direccion = excluded.direccion,
+            fecha_actualizacion = CURRENT_TIMESTAMP
+        '''
+    )
+
     # Asegurar falla base de diagnóstico para bases existentes
     falla_revision = cursor.execute(
         "SELECT id FROM fallas_catalogo WHERE UPPER(TRIM(nombre)) = UPPER(TRIM(?))",
@@ -411,6 +523,11 @@ def ensure_default_config(cursor, conn):
         ('ancho_papel_mm', '58', 'number'),
         ('largo_papel_mm', '300', 'number'),
         ('margen_papel_mm', '0', 'number'),
+        ('print_dispatch_mode', 'queue_auto', 'text'),
+        ('print_target_printer', '', 'text'),
+        ('print_backend_auto_enabled', 'false', 'text'),
+        ('print_backend_host', '', 'text'),
+        ('print_backend_port', '9100', 'number'),
         ('backup_interval_hours', '24', 'number'),
         ('ticket_encabezado', '', 'text'),
         ('ticket_comentarios', 'PANTALLAS NO TIENEN GARANTIA YA QUE ES UN CRISTAL Y DEPENDE DEL CUIDADOS DEL CLIENTE.\nLA CONTRASEÑA SE SOLICITA PARA HACER REVISION DE SU TELEFONO Y ASI GARANTIZAR QUE SU FUNCIONAMIENTO QUEDÓ EN OPTIMAS CONDICIONES.\nPASADOS 60 DIAS NO SE RESPONDE POR EQUIPOS ABANDONADOS.', 'text')

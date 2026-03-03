@@ -7,10 +7,13 @@ import re
 import os
 import sys
 import io
+import json
 import csv
 import sqlite3
+import zipfile
 import threading
 import time
+import socket
 from pathlib import Path
 from dotenv import load_dotenv
 from PIL import Image, ImageOps
@@ -23,6 +26,7 @@ from models.user import User
 from models.marca import Marca, Modelo
 from models.falla import Falla, IngresoFalla
 from models.ingreso import Ingreso
+from models.cliente import Cliente
 from models.nota import Nota
 from models.config import Configuracion
 from models.database import DB_PATH
@@ -46,6 +50,10 @@ jwt = JWTManager(app)
 try:
     from database.init_db import init_db
     init_db()
+    try:
+        Cliente.sync_from_ingresos()
+    except Exception:
+        pass
 except Exception as e:
     print(f"Advertencia: {e}")
 
@@ -149,6 +157,269 @@ def _start_backup_scheduler():
 
 
 _start_backup_scheduler()
+
+
+def _ensure_print_jobs_table():
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS print_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ingreso_id INTEGER NOT NULL,
+                requested_by INTEGER,
+                payload_json TEXT,
+                status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'done', 'error')),
+                attempts INTEGER DEFAULT 0,
+                printer_name TEXT,
+                last_error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                claimed_at TIMESTAMP,
+                completed_at TIMESTAMP,
+                FOREIGN KEY (ingreso_id) REFERENCES ingresos(id) ON DELETE CASCADE,
+                FOREIGN KEY (requested_by) REFERENCES usuarios(id)
+            )
+            '''
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_print_jobs_status_created ON print_jobs(status, created_at)")
+        columns = {row[1] for row in cursor.execute("PRAGMA table_info(print_jobs)").fetchall()}
+        if 'target_printer' not in columns:
+            cursor.execute("ALTER TABLE print_jobs ADD COLUMN target_printer TEXT")
+
+        cursor.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS print_workers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                worker_name TEXT UNIQUE NOT NULL,
+                worker_type TEXT DEFAULT 'agent' CHECK(worker_type IN ('agent', 'browser', 'backend')),
+                printer_name TEXT,
+                last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_print_workers_last_seen ON print_workers(last_seen)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_ensure_print_jobs_table()
+
+
+def _config_bool(key, default=False):
+    raw_value = Configuracion.get(key)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() in ('1', 'true', 'yes', 'si', 'sí', 'on')
+
+
+def _build_ticket_context(ingreso_id):
+    ingreso = Ingreso.get_by_id(ingreso_id)
+    if not ingreso:
+        raise ValueError('Ingreso no encontrado')
+
+    fallas = IngresoFalla.get_by_ingreso(ingreso_id)
+    ingreso_dict = dict(ingreso)
+    ingreso_dict['fallas'] = fallas
+
+    datos_negocio = Configuracion.get_datos_negocio()
+    ingreso_dict['nombre_negocio'] = datos_negocio.get('nombre_negocio', 'CELUPRO')
+    ingreso_dict['telefono_negocio'] = datos_negocio.get('telefono_negocio', '')
+    ingreso_dict['direccion_negocio'] = datos_negocio.get('direccion_negocio', '')
+    ingreso_dict['email_negocio'] = datos_negocio.get('email_negocio', '')
+
+    logo_path = None
+    logo_config = (
+        Configuracion.get('logo_ticket_url')
+        or Configuracion.get('logo_url')
+        or '/static/logos/logo_ticket.png'
+    )
+    if logo_config:
+        project_root = Path(__file__).parent.parent
+        logo_filename = logo_config.split('/')[-1]
+        logo_path = str(project_root / 'frontend' / 'static' / 'logos' / logo_filename)
+
+    return ingreso, ingreso_dict, datos_negocio, logo_path
+
+
+def _generate_ticket_bytes_for_ingreso(ingreso_id):
+    _, ingreso_dict, _, logo_path = _build_ticket_context(ingreso_id)
+    return generate_ticket_data(ingreso_dict, logo_path)
+
+
+def _claim_next_print_job_internal(printer_name='BACKEND_TCP_RAW'):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        cursor.execute('BEGIN IMMEDIATE')
+        job = cursor.execute(
+            '''
+                        SELECT id, ingreso_id, attempts
+            FROM print_jobs
+                        WHERE status = 'pending'
+                            AND (COALESCE(TRIM(target_printer), '') = '' OR target_printer = ?)
+                        ORDER BY CASE WHEN target_printer = ? THEN 0 ELSE 1 END, id ASC
+            LIMIT 1
+            '''
+                        , (printer_name, printer_name)
+        ).fetchone()
+
+        if not job:
+            conn.rollback()
+            return None
+
+        cursor.execute(
+            '''
+            UPDATE print_jobs
+            SET status = 'processing',
+                attempts = attempts + 1,
+                claimed_at = CURRENT_TIMESTAMP,
+                printer_name = COALESCE(NULLIF(?, ''), printer_name)
+            WHERE id = ?
+            ''',
+            (printer_name, job['id'])
+        )
+        conn.commit()
+        return {
+            'id': int(job['id']),
+            'ingreso_id': int(job['ingreso_id']),
+            'attempts': int(job['attempts'] or 0) + 1
+        }
+    finally:
+        conn.close()
+
+
+def _complete_print_job_internal(job_id):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE print_jobs
+            SET status = 'done',
+                completed_at = CURRENT_TIMESTAMP,
+                last_error = NULL
+            WHERE id = ? AND status = 'processing'
+            ''',
+            (job_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _fail_print_job_internal(job_id, error_message):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        row = cursor.execute("SELECT attempts FROM print_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return
+
+        attempts = int(row['attempts'] or 0)
+        next_status = 'error' if attempts >= 5 else 'pending'
+        cursor.execute(
+            '''
+            UPDATE print_jobs
+            SET status = ?,
+                last_error = ?,
+                completed_at = CASE WHEN ? = 'error' THEN CURRENT_TIMESTAMP ELSE completed_at END
+            WHERE id = ?
+            ''',
+            (next_status, str(error_message or 'Error de impresión')[:500], next_status, job_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _print_ticket_to_network_printer(host, port, ticket_bytes):
+    with socket.create_connection((host, port), timeout=10) as sock:
+        sock.sendall(ticket_bytes)
+
+
+def _upsert_print_worker(worker_name, worker_type='agent', printer_name=''):
+    safe_name = str(worker_name or '').strip()
+    if not safe_name:
+        return
+
+    safe_type = str(worker_type or 'agent').strip().lower()
+    if safe_type not in ('agent', 'browser', 'backend'):
+        safe_type = 'agent'
+
+    safe_printer = str(printer_name or '').strip()
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO print_workers (worker_name, worker_type, printer_name, last_seen)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(worker_name) DO UPDATE SET
+                worker_type = excluded.worker_type,
+                printer_name = excluded.printer_name,
+                last_seen = CURRENT_TIMESTAMP
+            ''',
+            (safe_name, safe_type, safe_printer)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _backend_print_worker_loop():
+    while True:
+        job = None
+        try:
+            enabled = _config_bool('print_backend_auto_enabled', False)
+            if not enabled:
+                time.sleep(2)
+                continue
+
+            _upsert_print_worker('BACKEND_TCP_RAW', 'backend', 'BACKEND_TCP_RAW')
+
+            host = str(Configuracion.get('print_backend_host') or '').strip()
+            if not host:
+                time.sleep(2)
+                continue
+
+            port_value = Configuracion.get('print_backend_port') or '9100'
+            try:
+                port = int(port_value)
+            except (TypeError, ValueError):
+                port = 9100
+
+            if port < 1 or port > 65535:
+                port = 9100
+
+            job = _claim_next_print_job_internal('BACKEND_TCP_RAW')
+            if not job:
+                time.sleep(1.5)
+                continue
+
+            ticket_bytes = _generate_ticket_bytes_for_ingreso(job['ingreso_id'])
+            _print_ticket_to_network_printer(host, port, ticket_bytes)
+            _complete_print_job_internal(job['id'])
+        except Exception as exc:
+            if job and job.get('id'):
+                try:
+                    _fail_print_job_internal(job['id'], str(exc))
+                except Exception:
+                    pass
+            time.sleep(2)
+
+
+def _start_backend_print_worker():
+    thread = threading.Thread(target=_backend_print_worker_loop, daemon=True, name='backend-print-worker')
+    thread.start()
+
+
+_start_backend_print_worker()
 
 # ===== RUTAS DE AUTENTICACIÓN =====
 @app.route('/api/auth/login', methods=['POST'])
@@ -531,6 +802,14 @@ def create_ingreso():
         # Agregar nota inicial si existe
         if data.get('notas_adicionales'):
             Nota.create(resultado['id'], current_user_id, data['notas_adicionales'], 'general')
+
+        Cliente.upsert({
+            'cliente_cedula': data.get('cliente_cedula'),
+            'cliente_nombre': data.get('cliente_nombre'),
+            'cliente_apellido': data.get('cliente_apellido'),
+            'cliente_telefono': data.get('cliente_telefono'),
+            'cliente_direccion': data.get('cliente_direccion')
+        })
         
         return jsonify(resultado), 201
     except Exception as e:
@@ -562,6 +841,20 @@ def get_ingreso(ingreso_id):
 def delete_ingreso(ingreso_id):
     """Elimina un ingreso (solo admin)"""
     try:
+        ingreso_actual = Ingreso.get_by_id(ingreso_id)
+        if not ingreso_actual:
+            return jsonify({'error': 'Ingreso no encontrado'}), 404
+
+        if str(ingreso_actual.get('estado_ingreso') or '').lower() == 'entregado':
+            return jsonify({'error': 'No se puede eliminar un ingreso entregado desde Registros'}), 409
+
+        Cliente.upsert({
+            'cliente_cedula': ingreso_actual.get('cliente_cedula'),
+            'cliente_nombre': ingreso_actual.get('cliente_nombre'),
+            'cliente_apellido': ingreso_actual.get('cliente_apellido'),
+            'cliente_telefono': ingreso_actual.get('cliente_telefono'),
+            'cliente_direccion': ingreso_actual.get('cliente_direccion')
+        })
         Ingreso.delete(ingreso_id)
         return jsonify({'success': True, 'message': 'Ingreso eliminado'}), 200
     except Exception as e:
@@ -677,6 +970,15 @@ def update_ingreso(ingreso_id):
 
         if updates:
             Ingreso.update(ingreso_id, updates)
+
+        merged_cliente = {
+            'cliente_nombre': updates.get('cliente_nombre', ingreso_actual.get('cliente_nombre')),
+            'cliente_apellido': updates.get('cliente_apellido', ingreso_actual.get('cliente_apellido')),
+            'cliente_cedula': updates.get('cliente_cedula', ingreso_actual.get('cliente_cedula')),
+            'cliente_telefono': updates.get('cliente_telefono', ingreso_actual.get('cliente_telefono')),
+            'cliente_direccion': updates.get('cliente_direccion', ingreso_actual.get('cliente_direccion'))
+        }
+        Cliente.upsert(merged_cliente)
         
         return jsonify({'success': True, 'message': 'Ingreso actualizado'}), 200
     except Exception as e:
@@ -1071,34 +1373,258 @@ def download_backup(filename):
     return send_file(str(backup_file), as_attachment=True, download_name=backup_file.name)
 
 
+@app.route('/api/admin/db/export', methods=['GET'])
+@role_required('admin')
+def export_full_database():
+    """Exporta la base de datos completa en CSV (ZIP)"""
+    try:
+        tables = [
+            'usuarios',
+            'marcas',
+            'modelos',
+            'fallas_catalogo',
+            'clientes',
+            'configuracion',
+            'ingresos',
+            'ingreso_fallas',
+            'notas_ingreso',
+            'print_jobs'
+        ]
+
+        zip_buffer = io.BytesIO()
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        try:
+            with zipfile.ZipFile(zip_buffer, 'w', compression=zipfile.ZIP_DEFLATED) as zip_file:
+                for table in tables:
+                    columns = [row['name'] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+                    if not columns:
+                        continue
+
+                    rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+                    output = io.StringIO()
+                    writer = csv.writer(output)
+                    writer.writerow(columns)
+                    for row in rows:
+                        writer.writerow([row[col] for col in columns])
+
+                    zip_file.writestr(f"{table}.csv", output.getvalue().encode('utf-8-sig'))
+                    output.close()
+        finally:
+            conn.close()
+
+        zip_buffer.seek(0)
+        return send_file(
+            zip_buffer,
+            as_attachment=True,
+            mimetype='application/zip',
+            download_name=f'celupro_full_csv_{datetime.now().strftime("%Y%m%d_%H%M%S")}.zip'
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/db/import', methods=['POST'])
+@role_required('admin')
+def import_full_database():
+    """Importa base completa desde ZIP de CSVs"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No se envió archivo de importación'}), 400
+
+    file = request.files['file']
+    if not file or not file.filename:
+        return jsonify({'error': 'Archivo inválido'}), 400
+
+    if not file.filename.lower().endswith('.zip'):
+        return jsonify({'error': 'Formato inválido. Debe ser un .zip con archivos CSV'}), 400
+
+    try:
+        expected_tables = [
+            'usuarios',
+            'marcas',
+            'modelos',
+            'fallas_catalogo',
+            'clientes',
+            'configuracion',
+            'ingresos',
+            'ingreso_fallas',
+            'notas_ingreso',
+            'print_jobs'
+        ]
+        required_tables = {'usuarios', 'marcas', 'modelos', 'ingresos', 'configuracion'}
+
+        zip_bytes = io.BytesIO(file.read())
+        with zipfile.ZipFile(zip_bytes, 'r') as zf:
+            available_csv = {Path(name).name for name in zf.namelist() if name.lower().endswith('.csv')}
+            required_csv = {f'{table}.csv' for table in required_tables}
+            missing = sorted(required_csv - available_csv)
+
+            if missing:
+                return jsonify({'error': f'Plantilla incompleta. Faltan: {", ".join(missing)}'}), 400
+
+            table_rows = {}
+            for table in expected_tables:
+                filename = f'{table}.csv'
+                if filename not in available_csv:
+                    table_rows[table] = []
+                    continue
+
+                raw = zf.read(filename).decode('utf-8-sig')
+                reader = csv.DictReader(io.StringIO(raw))
+                table_rows[table] = list(reader)
+
+        # Respaldo de seguridad antes de importar
+        _create_backup_file()
+
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute('PRAGMA foreign_keys = OFF')
+            cursor.execute('BEGIN')
+
+            delete_order = [
+                'print_jobs',
+                'notas_ingreso',
+                'ingreso_fallas',
+                'ingresos',
+                'modelos',
+                'marcas',
+                'fallas_catalogo',
+                'clientes',
+                'configuracion',
+                'usuarios'
+            ]
+
+            for table in delete_order:
+                cursor.execute(f'DELETE FROM {table}')
+
+            insert_order = [
+                'usuarios',
+                'marcas',
+                'modelos',
+                'fallas_catalogo',
+                'clientes',
+                'configuracion',
+                'ingresos',
+                'ingreso_fallas',
+                'notas_ingreso',
+                'print_jobs'
+            ]
+
+            for table in insert_order:
+                rows = table_rows.get(table, [])
+                if not rows:
+                    continue
+
+                db_columns = [row[1] for row in cursor.execute(f'PRAGMA table_info({table})').fetchall()]
+                csv_columns = [col for col in rows[0].keys() if col in db_columns]
+                if not csv_columns:
+                    continue
+
+                placeholders = ','.join(['?'] * len(csv_columns))
+                insert_sql = f"INSERT INTO {table} ({', '.join(csv_columns)}) VALUES ({placeholders})"
+
+                for row in rows:
+                    values = [None if row.get(col, '') == '' else row.get(col) for col in csv_columns]
+                    cursor.execute(insert_sql, values)
+
+            conn.commit()
+            cursor.execute('PRAGMA foreign_keys = ON')
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        from database.init_db import init_db as reinit_db
+        reinit_db()
+        Cliente.sync_from_ingresos()
+
+        return jsonify({'success': True, 'message': 'Base de datos importada desde CSV correctamente'}), 200
+    except zipfile.BadZipFile:
+        return jsonify({'error': 'Archivo ZIP inválido'}), 400
+    except UnicodeDecodeError:
+        return jsonify({'error': 'Uno o más CSV no están en UTF-8'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/ingresos/clear', methods=['POST'])
+@role_required('admin')
+def clear_all_ingresos_keep_clientes():
+    """Elimina todos los ingresos (incluyendo fallas y notas), preservando la base de clientes."""
+    try:
+        _create_backup_file()
+
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        try:
+            cursor = conn.cursor()
+            cursor.execute('PRAGMA foreign_keys = OFF')
+            cursor.execute('BEGIN')
+
+            notas_count = cursor.execute('SELECT COUNT(*) AS c FROM notas_ingreso').fetchone()['c']
+            fallas_count = cursor.execute('SELECT COUNT(*) AS c FROM ingreso_fallas').fetchone()['c']
+            ingresos_count = cursor.execute('SELECT COUNT(*) AS c FROM ingresos').fetchone()['c']
+            jobs_count = cursor.execute('SELECT COUNT(*) AS c FROM print_jobs').fetchone()['c']
+
+            cursor.execute('DELETE FROM print_jobs')
+            cursor.execute('DELETE FROM notas_ingreso')
+            cursor.execute('DELETE FROM ingreso_fallas')
+            cursor.execute('DELETE FROM ingresos')
+
+            try:
+                cursor.execute("DELETE FROM sqlite_sequence WHERE name IN ('ingresos','ingreso_fallas','notas_ingreso','print_jobs')")
+            except Exception:
+                pass
+
+            clientes_count = cursor.execute('SELECT COUNT(*) AS c FROM clientes').fetchone()['c']
+
+            conn.commit()
+            cursor.execute('PRAGMA foreign_keys = ON')
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        return jsonify({
+            'success': True,
+            'message': 'Se eliminaron todos los ingresos sin borrar clientes',
+            'deleted': {
+                'ingresos': int(ingresos_count or 0),
+                'ingreso_fallas': int(fallas_count or 0),
+                'notas_ingreso': int(notas_count or 0),
+                'print_jobs': int(jobs_count or 0)
+            },
+            'clientes_preservados': int(clientes_count or 0)
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/admin/csv/clientes/export', methods=['GET'])
 @role_required('admin')
 def export_clientes_csv():
     """Exporta clientes únicos (por cédula) a CSV"""
     try:
         from models.database import db as database
-        norm_expr = "REPLACE(REPLACE(REPLACE(UPPER(TRIM(cliente_cedula)), '.', ''), '-', ''), ' ', '')"
-        query = f'''
+        query = '''
         SELECT
-            i.cliente_cedula,
-            i.cliente_nombre,
-            i.cliente_apellido,
-            i.cliente_telefono,
-            i.cliente_direccion,
+            c.cedula as cliente_cedula,
+            c.nombre as cliente_nombre,
+            c.apellido as cliente_apellido,
+            c.telefono as cliente_telefono,
+            c.direccion as cliente_direccion,
             (
                 SELECT COUNT(*)
-                FROM ingresos i3
-                WHERE {norm_expr.replace('cliente_cedula', 'i3.cliente_cedula')} = {norm_expr.replace('cliente_cedula', 'i.cliente_cedula')}
+                FROM ingresos i
+                WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(i.cliente_cedula)), '.', ''), '-', ''), ' ', '') = c.cedula
             ) AS total_ingresos
-        FROM ingresos i
-        WHERE i.id = (
-            SELECT i2.id
-            FROM ingresos i2
-            WHERE {norm_expr.replace('cliente_cedula', 'i2.cliente_cedula')} = {norm_expr.replace('cliente_cedula', 'i.cliente_cedula')}
-            ORDER BY datetime(i2.fecha_ingreso) DESC, i2.id DESC
-            LIMIT 1
-        )
-        ORDER BY datetime(i.fecha_ingreso) DESC, i.id DESC
+        FROM clientes c
+        ORDER BY c.fecha_actualizacion DESC, c.id DESC
         '''
 
         rows = database.execute_query(query)
@@ -1169,6 +1695,7 @@ def import_clientes_csv():
         updated_rows = 0
         skipped_rows = 0
         no_match_rows = 0
+        clientes_upserted = 0
 
         for row in reader:
             cedula_norm = _normalize_cedula(row.get(cedula_field, ''))
@@ -1180,6 +1707,15 @@ def import_clientes_csv():
             if not cedula_norm or not nombre or not apellido:
                 skipped_rows += 1
                 continue
+
+            Cliente.upsert({
+                'cliente_cedula': cedula_norm,
+                'cliente_nombre': nombre,
+                'cliente_apellido': apellido,
+                'cliente_telefono': telefono,
+                'cliente_direccion': direccion
+            })
+            clientes_upserted += 1
 
             query = '''
             UPDATE ingresos
@@ -1203,6 +1739,7 @@ def import_clientes_csv():
 
         return jsonify({
             'success': True,
+            'clientes_upserted': clientes_upserted,
             'updated_rows': updated_rows,
             'skipped_rows': skipped_rows,
             'no_match_rows': no_match_rows
@@ -1225,7 +1762,9 @@ def get_configuracion_publica():
             'logo_url': datos.get('logo_url'),
             'logo_navbar_url': logo_navbar,
             'logo_ticket_url': logo_ticket,
-            'tecnico_default_id': Configuracion.get('tecnico_default_id')
+            'tecnico_default_id': Configuracion.get('tecnico_default_id'),
+            'print_dispatch_mode': 'queue_auto',
+            'print_target_printer': Configuracion.get('print_target_printer') or ''
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1331,38 +1870,8 @@ def upload_logo_legacy():
 @jwt_required()
 def get_ticket_data(ingreso_id):
     """Obtiene datos y genera comando ESC/POS para ticket"""
-    ingreso = Ingreso.get_by_id(ingreso_id)
-    
-    if not ingreso:
-        return jsonify({'error': 'Ingreso no encontrado'}), 404
-    
     try:
-        # Obtener fallas del ingreso
-        fallas = IngresoFalla.get_by_ingreso(ingreso_id)
-        ingreso_dict = dict(ingreso)
-        ingreso_dict['fallas'] = fallas
-
-        # Datos del negocio para vista previa
-        datos_negocio = Configuracion.get_datos_negocio()
-        ingreso_dict['nombre_negocio'] = datos_negocio.get('nombre_negocio', 'CELUPRO')
-        ingreso_dict['telefono_negocio'] = datos_negocio.get('telefono_negocio', '')
-        ingreso_dict['direccion_negocio'] = datos_negocio.get('direccion_negocio', '')
-        ingreso_dict['email_negocio'] = datos_negocio.get('email_negocio', '')
-        
-        # Obtener ruta del logo (absoluta desde la raíz del proyecto)
-        logo_path = None
-        logo_config = (
-            Configuracion.get('logo_ticket_url')
-            or Configuracion.get('logo_url')
-            or '/static/logos/logo_ticket.png'
-        )
-        if logo_config:
-            # Construir ruta absoluta al logo
-            project_root = Path(__file__).parent.parent
-            logo_filename = logo_config.split('/')[-1]
-            logo_path = str(project_root / 'frontend' / 'static' / 'logos' / logo_filename)
-        
-        # Generar datos del ticket
+        ingreso, ingreso_dict, datos_negocio, logo_path = _build_ticket_context(ingreso_id)
         ticket_bytes = generate_ticket_data(ingreso_dict, logo_path)
         
         # Retornar en base64 para que el frontend lo envíe a la impresora
@@ -1383,6 +1892,259 @@ def get_ticket_data(ingreso_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/api/print-jobs', methods=['POST'])
+@role_required('admin', 'empleado', 'tecnico')
+def enqueue_print_job():
+    """Encola un trabajo de impresión para ser procesado por el agente del local."""
+    data = request.get_json() or {}
+    ingreso_id = data.get('ingreso_id')
+
+    try:
+        ingreso_id = int(ingreso_id)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'ingreso_id inválido'}), 400
+
+    ingreso = Ingreso.get_by_id(ingreso_id)
+    if not ingreso:
+        return jsonify({'error': 'Ingreso no encontrado'}), 404
+
+    payload = data.get('payload') if isinstance(data.get('payload'), dict) else {}
+    target_printer = str(data.get('target_printer') or payload.get('target_printer') or Configuracion.get('print_target_printer') or '').strip()
+    payload = dict(payload)
+    if target_printer:
+        payload['target_printer'] = target_printer
+    requested_by = int(get_jwt_identity())
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO print_jobs (ingreso_id, requested_by, payload_json, target_printer, status)
+            VALUES (?, ?, ?, ?, 'pending')
+            ''',
+            (ingreso_id, requested_by, json.dumps(payload, ensure_ascii=False), target_printer)
+        )
+        job_id = cursor.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({
+        'success': True,
+        'job_id': job_id,
+        'ingreso_id': ingreso_id,
+        'target_printer': target_printer,
+        'status': 'pending'
+    }), 201
+
+
+@app.route('/api/print-workers/heartbeat', methods=['POST'])
+@role_required('admin')
+def print_worker_heartbeat():
+    data = request.get_json() or {}
+    worker_name = str(data.get('worker_name') or '').strip()
+    worker_type = str(data.get('worker_type') or 'agent').strip().lower()
+    printer_name = str(data.get('printer_name') or worker_name).strip()
+
+    if not worker_name:
+        return jsonify({'error': 'worker_name requerido'}), 400
+
+    _upsert_print_worker(worker_name, worker_type, printer_name)
+    return jsonify({'success': True}), 200
+
+
+@app.route('/api/print-workers', methods=['GET'])
+@role_required('admin')
+def list_print_workers():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            '''
+            SELECT worker_name, worker_type, printer_name, last_seen,
+                   CASE WHEN datetime(last_seen) >= datetime('now', '-120 seconds') THEN 1 ELSE 0 END AS online
+            FROM print_workers
+            ORDER BY online DESC, datetime(last_seen) DESC, worker_name ASC
+            '''
+        ).fetchall()
+
+        workers = []
+        for row in rows:
+            worker_name = row['worker_name']
+            printer_name = row['printer_name']
+            worker_type = row['worker_type']
+
+            normalized_name = str(worker_name or '').upper()
+            normalized_printer = str(printer_name or '').upper()
+            if normalized_name.startswith('BROWSER_') or normalized_printer.startswith('BROWSER_'):
+                worker_type = 'browser'
+
+            workers.append({
+                'worker_name': worker_name,
+                'worker_type': worker_type,
+                'printer_name': printer_name,
+                'last_seen': row['last_seen'],
+                'online': bool(row['online'])
+            })
+
+        if not workers:
+            legacy_rows = conn.execute(
+                '''
+                SELECT DISTINCT printer_name
+                FROM print_jobs
+                WHERE COALESCE(TRIM(printer_name), '') <> ''
+                ORDER BY printer_name ASC
+                LIMIT 20
+                '''
+            ).fetchall()
+            workers = [
+                {
+                    'worker_name': row['printer_name'],
+                    'worker_type': 'agent',
+                    'printer_name': row['printer_name'],
+                    'last_seen': None,
+                    'online': False
+                }
+                for row in legacy_rows
+            ]
+        return jsonify({'success': True, 'workers': workers}), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/print-jobs/claim', methods=['POST'])
+@role_required('admin')
+def claim_print_job():
+    """Reserva atómicamente el siguiente trabajo pendiente para un agente de impresión."""
+    data = request.get_json() or {}
+    printer_name = str(data.get('printer_name') or '').strip()
+    worker_type = str(data.get('worker_type') or 'agent').strip().lower()
+    if worker_type not in ('agent', 'browser', 'backend'):
+        worker_type = 'agent'
+
+    try:
+        _upsert_print_worker(printer_name or 'UNNAMED_WORKER', worker_type, printer_name)
+    except Exception:
+        pass
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        cursor.execute('BEGIN IMMEDIATE')
+
+        job = cursor.execute(
+            '''
+            SELECT id, ingreso_id, payload_json, attempts, created_at, target_printer
+            FROM print_jobs
+            WHERE status = 'pending'
+              AND (COALESCE(TRIM(target_printer), '') = '' OR target_printer = ?)
+            ORDER BY CASE WHEN target_printer = ? THEN 0 ELSE 1 END, id ASC
+            LIMIT 1
+            ''',
+            (printer_name, printer_name)
+        ).fetchone()
+
+        if not job:
+            conn.rollback()
+            return jsonify({'success': True, 'job': None}), 200
+
+        cursor.execute(
+            '''
+            UPDATE print_jobs
+            SET status = 'processing',
+                attempts = attempts + 1,
+                claimed_at = CURRENT_TIMESTAMP,
+                printer_name = COALESCE(NULLIF(?, ''), printer_name)
+            WHERE id = ?
+            ''',
+            (printer_name, job['id'])
+        )
+        conn.commit()
+
+        payload = {}
+        if job['payload_json']:
+            try:
+                payload = json.loads(job['payload_json'])
+            except Exception:
+                payload = {}
+
+        return jsonify({
+            'success': True,
+            'job': {
+                'id': job['id'],
+                'ingreso_id': job['ingreso_id'],
+                'attempts': int(job['attempts'] or 0) + 1,
+                'created_at': job['created_at'],
+                'target_printer': job['target_printer'],
+                'payload': payload
+            }
+        }), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/print-jobs/<int:job_id>/complete', methods=['POST'])
+@role_required('admin')
+def complete_print_job(job_id):
+    """Marca un trabajo de impresión como completado."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            UPDATE print_jobs
+            SET status = 'done',
+                completed_at = CURRENT_TIMESTAMP,
+                last_error = NULL
+            WHERE id = ? AND status = 'processing'
+            ''',
+            (job_id,)
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return jsonify({'error': 'Trabajo no encontrado o no está en processing'}), 404
+        return jsonify({'success': True}), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/print-jobs/<int:job_id>/fail', methods=['POST'])
+@role_required('admin')
+def fail_print_job(job_id):
+    """Reporta fallo del trabajo; reintenta automáticamente hasta 5 veces."""
+    data = request.get_json() or {}
+    error_message = str(data.get('error') or 'Error de impresión').strip()[:500]
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        cursor = conn.cursor()
+        row = cursor.execute("SELECT attempts FROM print_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return jsonify({'error': 'Trabajo no encontrado'}), 404
+
+        attempts = int(row['attempts'] or 0)
+        next_status = 'error' if attempts >= 5 else 'pending'
+
+        cursor.execute(
+            '''
+            UPDATE print_jobs
+            SET status = ?,
+                last_error = ?,
+                completed_at = CASE WHEN ? = 'error' THEN CURRENT_TIMESTAMP ELSE completed_at END
+            WHERE id = ?
+            ''',
+            (next_status, error_message, next_status, job_id)
+        )
+        conn.commit()
+
+        return jsonify({'success': True, 'status': next_status, 'attempts': attempts}), 200
+    finally:
+        conn.close()
+
 # ===== RUTAS DE BÚSQUEDA DE CLIENTES =====
 @app.route('/api/clientes/buscar', methods=['GET'])
 def buscar_clientes():
@@ -1392,45 +2154,16 @@ def buscar_clientes():
         
         if not query_param or len(query_param) < 2:
             return jsonify({'data': []}), 200
-        
-        query = '''
-        SELECT
-            i.cliente_cedula,
-            i.cliente_nombre,
-            i.cliente_apellido,
-            i.cliente_telefono,
-            i.cliente_direccion
-        FROM ingresos i
-        WHERE
-            (UPPER(i.cliente_nombre) LIKE ? OR
-             UPPER(i.cliente_apellido) LIKE ? OR
-             UPPER(i.cliente_cedula) LIKE ? OR
-             UPPER(i.cliente_telefono) LIKE ?)
-            AND i.id = (
-                SELECT i2.id
-                FROM ingresos i2
-                WHERE REPLACE(REPLACE(REPLACE(UPPER(TRIM(i2.cliente_cedula)), '.', ''), '-', ''), ' ', '')
-                      = REPLACE(REPLACE(REPLACE(UPPER(TRIM(i.cliente_cedula)), '.', ''), '-', ''), ' ', '')
-                ORDER BY datetime(i2.fecha_ingreso) DESC, i2.id DESC
-                LIMIT 1
-            )
-        ORDER BY i.cliente_nombre, i.cliente_apellido
-        LIMIT 10
-        '''
-        
-        search_term = f"%{query_param}%"
-        
-        from models.database import db as database
-        results = database.execute_query(query, (search_term, search_term, search_term, search_term))
+        results = Cliente.search(query_param, limit=10)
         
         clientes = []
         for row in results:
             clientes.append({
-                'nombre': row['cliente_nombre'],
-                'apellido': row['cliente_apellido'],
-                'cedula': row['cliente_cedula'],
-                'telefono': row['cliente_telefono'],
-                'direccion': row['cliente_direccion']
+                'nombre': row['nombre'],
+                'apellido': row['apellido'],
+                'cedula': row['cedula'],
+                'telefono': row['telefono'],
+                'direccion': row['direccion']
             })
         
         return jsonify({'data': clientes}), 200
@@ -1480,8 +2213,10 @@ def actualizar_cliente_por_cedula(cedula):
         (cedula_original_norm,)
     )
 
+    Cliente.update_by_cedula(cedula, nombre, apellido, cedula_nueva, telefono, direccion)
+
     if not ingresos:
-        return jsonify({'error': 'No se encontraron ingresos para esa cédula'}), 404
+        return jsonify({'success': True, 'updated': 0, 'message': 'Cliente actualizado en catálogo'}), 200
 
     for row in ingresos:
         Ingreso.update(row['id'], {
