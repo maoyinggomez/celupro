@@ -81,6 +81,7 @@ def init_db():
         equipo_no_lista BOOLEAN DEFAULT 0,
         color TEXT,
         imei TEXT,
+        imei_no_visible BOOLEAN DEFAULT 0,
         falla_general TEXT,
         notas_adicionales TEXT,
         estado_display BOOLEAN,
@@ -388,6 +389,9 @@ def ensure_schema_updates(cursor, conn):
 
     if 'imei' not in columnas_ingresos:
         cursor.execute("ALTER TABLE ingresos ADD COLUMN imei TEXT")
+
+    if 'imei_no_visible' not in columnas_ingresos:
+        cursor.execute("ALTER TABLE ingresos ADD COLUMN imei_no_visible BOOLEAN DEFAULT 0")
 
     if 'tipo_clave' not in columnas_ingresos:
         cursor.execute("ALTER TABLE ingresos ADD COLUMN tipo_clave TEXT")

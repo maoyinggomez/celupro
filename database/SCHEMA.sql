@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS ingresos (
     equipo_no_lista BOOLEAN DEFAULT 0,
     color TEXT,
     imei TEXT,
+    imei_no_visible BOOLEAN DEFAULT 0,
     falla_general TEXT,
     notas_adicionales TEXT,
     estado_display BOOLEAN,

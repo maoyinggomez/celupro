@@ -589,6 +589,7 @@ async function loadPage(page) {
                 equipoNoListaCheckbox.addEventListener('change', toggleEquipoNoLista);
                 toggleEquipoNoLista();
             }
+
         } else if (page === 'admin') {
             const adminTabs = document.querySelectorAll('#mainContent .nav-tabs .nav-link[data-bs-toggle="tab"]');
             adminTabs.forEach((tab) => {
@@ -682,28 +683,36 @@ function startAdminPrintStatusAutoRefresh() {
 
 function shouldShowQuickEntregaButton() {
     const user = getCurrentUserSafe();
-    return !!(user && (user.rol === 'admin' || user.rol === 'empleado'));
+    return !!(user && (user.rol === 'admin' || user.rol === 'empleado' || user.rol === 'tecnico'));
 }
 
 function ensureQuickEntregaButton() {
     const existing = document.getElementById('quickEntregaFab');
+    const buttonHtml = `
+        <span class="quick-entrega-fab-icon"><i class="fas fa-cash-register"></i></span>
+        <span class="quick-entrega-fab-text-wrap">
+            <span class="quick-entrega-fab-title">Entrega / Pago</span>
+            <span class="quick-entrega-fab-subtitle">Registrar e imprimir ticket</span>
+        </span>
+    `;
 
     if (!shouldShowQuickEntregaButton()) {
         if (existing) existing.remove();
         return;
     }
 
-    if (existing) return;
+    if (existing) {
+        existing.innerHTML = buttonHtml;
+        existing.title = 'Registrar entrega o pago rápido';
+        return;
+    }
 
     const button = document.createElement('button');
     button.id = 'quickEntregaFab';
     button.className = 'quick-entrega-fab';
     button.type = 'button';
-    button.innerHTML = `
-        <span class="quick-entrega-fab-icon"><i class="fas fa-box-open"></i></span>
-        <span class="quick-entrega-fab-text">Registrar Pago</span>
-    `;
-    button.title = 'Registrar pago rápido';
+    button.innerHTML = buttonHtml;
+    button.title = 'Registrar entrega o pago rápido';
     button.addEventListener('click', openQuickEntregaModal);
     document.body.appendChild(button);
 }
@@ -882,7 +891,7 @@ function updateQuickEntregaActionMode() {
     toggleQuickEntregaReceiverFields();
 }
 
-async function openQuickEntregaModal() {
+async function openQuickEntregaModal(preselectedIngresoId = null) {
     try {
         quickEntregaCache = await loadQuickEntregaIngresos();
     } catch (error) {
@@ -895,10 +904,10 @@ async function openQuickEntregaModal() {
     modal.id = 'quickEntregaModal';
     modal.setAttribute('tabindex', '-1');
     modal.innerHTML = `
-        <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-dialog modal-xl modal-dialog-centered quick-entrega-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h5 class="modal-title"><i class="fas fa-box-open me-2"></i>Registrar Pago Rápido</h5>
+                    <h5 class="modal-title quick-entrega-title"><i class="fas fa-box-open me-2"></i>Registrar Pago Rápido</h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
@@ -914,16 +923,16 @@ async function openQuickEntregaModal() {
                             <small class="text-muted">Solo muestra ingresos en estado reparado o no reparable.</small>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Cliente</label>
-                            <input type="text" id="quickEntregaCliente" class="form-control" readonly>
+                            <label class="form-label quick-entrega-label-strong">Cliente</label>
+                            <input type="text" id="quickEntregaCliente" class="form-control quick-entrega-cliente" readonly>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Valor a cobrar</label>
-                            <input type="text" id="quickEntregaValor" class="form-control" readonly>
+                            <label class="form-label quick-entrega-label-strong">Valor a cobrar</label>
+                            <input type="text" id="quickEntregaValor" class="form-control quick-entrega-value" readonly>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">Tipo de pago</label>
-                            <select id="quickEntregaTipoPago" class="form-select">
+                            <label class="form-label quick-entrega-label-strong">Tipo de pago</label>
+                            <select id="quickEntregaTipoPago" class="form-select quick-entrega-select-strong">
                                 <option value="">Selecciona tipo de pago...</option>
                                 <option value="efectivo">Efectivo</option>
                                 <option value="transferencia">Transferencia</option>
@@ -936,7 +945,7 @@ async function openQuickEntregaModal() {
                         <div class="col-md-6 d-flex align-items-end">
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" id="quickEntregaPagado" checked>
-                                <label class="form-check-label" for="quickEntregaPagado">Marcar como pagado</label>
+                                <label class="form-check-label quick-entrega-check-label" for="quickEntregaPagado">Marcar como pagado</label>
                             </div>
                         </div>
 
@@ -964,19 +973,19 @@ async function openQuickEntregaModal() {
 
                         <div class="col-12" id="quickEntregaCashWrap" style="display:none;">
                             <div class="border rounded p-3 bg-light">
-                                <h6 class="mb-3"><i class="fas fa-money-bill-wave me-2"></i>Pago en efectivo</h6>
+                                <h6 class="mb-3 quick-entrega-cash-title"><i class="fas fa-money-bill-wave me-2"></i>Pago en efectivo</h6>
                                 <div class="row g-3">
                                     <div class="col-md-4">
-                                        <label class="form-label">Monto recibido</label>
-                                        <input type="text" id="quickEntregaMontoRecibido" class="form-control" placeholder="Ej: 50000">
+                                        <label class="form-label quick-entrega-label-strong">Monto recibido</label>
+                                        <input type="text" id="quickEntregaMontoRecibido" class="form-control quick-entrega-money-input" placeholder="Ej: 50000">
                                     </div>
                                     <div class="col-md-4">
-                                        <label class="form-label">Devuelta</label>
-                                        <input type="text" id="quickEntregaDevuelta" class="form-control" readonly value="$ 0">
+                                        <label class="form-label quick-entrega-label-strong">Devuelta</label>
+                                        <input type="text" id="quickEntregaDevuelta" class="form-control quick-entrega-money-output" readonly value="$ 0">
                                     </div>
                                     <div class="col-md-4">
-                                        <label class="form-label">Faltante</label>
-                                        <input type="text" id="quickEntregaFaltante" class="form-control" readonly value="$ 0">
+                                        <label class="form-label quick-entrega-label-strong">Faltante</label>
+                                        <input type="text" id="quickEntregaFaltante" class="form-control quick-entrega-money-output" readonly value="$ 0">
                                     </div>
                                 </div>
                             </div>
@@ -985,7 +994,7 @@ async function openQuickEntregaModal() {
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                    <button type="button" class="btn btn-success" id="quickEntregaConfirmBtn">
+                    <button type="button" class="btn btn-success quick-entrega-confirm-btn" id="quickEntregaConfirmBtn">
                         <i class="fas fa-check me-2"></i>Registrar pago y entrega e imprimir ticket
                     </button>
                 </div>
@@ -994,7 +1003,7 @@ async function openQuickEntregaModal() {
     `;
 
     document.body.appendChild(modal);
-    renderQuickEntregaOptions(quickEntregaCache, '');
+    renderQuickEntregaOptions(quickEntregaCache, '', preselectedIngresoId);
     renderQuickEntregaSearchSuggestions(quickEntregaCache, '');
 
     const searchInput = modal.querySelector('#quickEntregaSearch');
@@ -1070,6 +1079,17 @@ async function openQuickEntregaModal() {
 
     if (confirmBtn) {
         confirmBtn.addEventListener('click', procesarQuickEntrega);
+    }
+
+    if (preselectedIngresoId && select) {
+        const ingresoInicial = quickEntregaCache.find((item) => Number(item.id) === Number(preselectedIngresoId));
+        if (ingresoInicial) {
+            select.value = String(preselectedIngresoId);
+            if (searchInput) {
+                searchInput.value = `#${ingresoInicial.numero_ingreso || ingresoInicial.id} · ${ingresoInicial.cliente_nombre || ''} ${ingresoInicial.cliente_apellido || ''}`.trim();
+            }
+            renderQuickEntregaSearchSuggestions(quickEntregaCache, searchInput?.value || '');
+        }
     }
 
     toggleQuickEntregaCashFields();
@@ -1668,7 +1688,15 @@ async function loadIngresoForm() {
                         <div class="col-12 col-md-6">
                             <div class="mb-3">
                                 <label class="form-label">IMEI *</label>
-                                <input type="text" class="form-control form-control-lg" id="imei" inputmode="numeric" pattern="[0-9]{15}" maxlength="15" placeholder="15 dígitos" required>
+                                <input type="text" class="form-control form-control-lg" id="imei" inputmode="numeric" autocomplete="off" placeholder="1 o 2 IMEIs (15 dígitos c/u). Ej: 123456789012345 / 123456789012346" required>
+                                <small class="text-muted d-block mt-1" id="imeiCountHint">IMEIs detectados: 0 de 2</small>
+                                <div class="form-check mt-2">
+                                    <input class="form-check-input" type="checkbox" id="imei_no_visible">
+                                    <label class="form-check-label" for="imei_no_visible">
+                                        IMEI no visible
+                                    </label>
+                                    <small class="text-muted d-block">Úsalo cuando no se puede leer físicamente el IMEI del equipo.</small>
+                                </div>
                             </div>
                         </div>
                         <div class="col-12 col-md-6">
@@ -2108,6 +2136,117 @@ async function loadModelosByMarca() {
     select.innerHTML = html;
 }
 
+function parseImeiList(rawValue) {
+    const raw = String(rawValue || '').trim();
+    const onlyDigits = raw.replace(/\D/g, '');
+
+    if (!raw) {
+        return {
+            ok: false,
+            imeis: [],
+            normalized: '',
+            count: 0,
+            error: 'Debes ingresar al menos un IMEI válido'
+        };
+    }
+
+    let imeis = [];
+    const hasSeparator = /[\s,;\/|-]+/.test(raw);
+
+    if (!hasSeparator && onlyDigits.length === 30) {
+        imeis = [onlyDigits.slice(0, 15), onlyDigits.slice(15, 30)];
+    } else {
+        imeis = raw
+            .split(/[^0-9]+/)
+            .map((part) => part.trim())
+            .filter(Boolean);
+    }
+
+    if (!imeis.length) {
+        return {
+            ok: false,
+            imeis: [],
+            normalized: '',
+            count: 0,
+            error: 'Debes ingresar al menos un IMEI válido'
+        };
+    }
+
+    if (imeis.length > 2) {
+        return {
+            ok: false,
+            imeis,
+            normalized: '',
+            count: imeis.length,
+            error: 'Solo se permiten máximo 2 IMEIs por equipo'
+        };
+    }
+
+    if (!imeis.every((item) => /^\d{15}$/.test(item))) {
+        return {
+            ok: false,
+            imeis,
+            normalized: '',
+            count: imeis.length,
+            error: 'Cada IMEI debe tener exactamente 15 dígitos'
+        };
+    }
+
+    if (new Set(imeis).size !== imeis.length) {
+        return {
+            ok: false,
+            imeis,
+            normalized: '',
+            count: imeis.length,
+            error: 'No repitas el mismo IMEI dos veces'
+        };
+    }
+
+    return {
+        ok: true,
+        imeis,
+        normalized: imeis.join(' / '),
+        count: imeis.length,
+        error: ''
+    };
+}
+
+function updateImeiCountHint() {
+    const hint = document.getElementById('imeiCountHint');
+    const imeiInput = document.getElementById('imei');
+    const imeiNoVisible = !!document.getElementById('imei_no_visible')?.checked;
+    if (!hint) return;
+
+    if (imeiNoVisible) {
+        hint.textContent = 'IMEI marcado como no visible';
+        hint.classList.remove('text-danger');
+        return;
+    }
+
+    const parsed = parseImeiList(imeiInput?.value || '');
+    hint.textContent = `IMEIs detectados: ${Math.min(parsed.count, 2)} de 2`;
+    hint.classList.toggle('text-danger', !!(imeiInput?.value && !parsed.ok));
+}
+
+function toggleImeiNoVisible() {
+    const imeiInput = document.getElementById('imei');
+    const imeiNoVisible = !!document.getElementById('imei_no_visible')?.checked;
+    if (!imeiInput) return;
+
+    if (imeiNoVisible) {
+        imeiInput.value = '';
+        imeiInput.required = false;
+        imeiInput.disabled = true;
+        imeiInput.placeholder = 'IMEI no visible';
+    } else {
+        imeiInput.required = true;
+        imeiInput.disabled = false;
+        imeiInput.placeholder = '1 o 2 IMEIs (15 dígitos c/u). Ej: 123456789012345 / 123456789012346';
+    }
+
+    updateImeiCountHint();
+}
+
 async function submitIngreso(e) {
     e.preventDefault();
     if (isSubmittingIngreso) {
@@ -2139,7 +2278,8 @@ async function submitIngreso(e) {
         cliente_telefono: sanitizeOnlyDigits(document.getElementById('cliente_telefono').value),
         cliente_direccion: document.getElementById('cliente_direccion').value.toUpperCase(),
         color: document.getElementById('color').value.toUpperCase(),
-        imei: sanitizeOnlyDigits(document.getElementById('imei').value, 15),
+        imei: String(document.getElementById('imei').value || ''),
+        imei_no_visible: document.getElementById('imei_no_visible')?.checked === true,
         falla_general: document.getElementById('falla_general').value.toUpperCase(),
         estado_display: document.getElementById('visor_partido_select').value === 'SI',
         estado_tactil: false,
@@ -2213,12 +2353,18 @@ async function submitIngreso(e) {
         return;
     }
 
-    if (!datos.imei || !/^\d{15}$/.test(datos.imei)) {
-        currentWizardStep = 2;
-        updateWizardDisplay();
-        showWizardStepAlert(2, 'El IMEI es obligatorio y debe tener exactamente 15 dígitos', 'danger');
-        isSubmittingIngreso = false;
-        return;
+    if (!datos.imei_no_visible) {
+        const parsedImei = parseImeiList(datos.imei);
+        if (!parsedImei.ok) {
+            currentWizardStep = 2;
+            updateWizardDisplay();
+            showWizardStepAlert(2, parsedImei.error || 'IMEI inválido', 'danger');
+            isSubmittingIngreso = false;
+            return;
+        }
+        datos.imei = parsedImei.normalized;
+    } else {
+        datos.imei = '';
     }
 
     if (!datos.fallas_iniciales.length) {
@@ -2349,17 +2495,24 @@ async function loadRegistros() {
     
     if (response.data.length === 0) {
         return `
-            <h2 class="mb-4">Registros de Ingresos</h2>
-            <div class="alert alert-info">
-                No hay registros de ingresos aún. <a href="#" onclick="loadPage('ingreso')">Crear uno ahora</a>
+            <div class="module-shell module-shell-registros registros-soft-shell">
+                <div class="module-header">
+                    <h2 class="module-title">Registros de Ingresos</h2>
+                </div>
+                <div class="alert alert-info module-empty-alert">
+                    No hay registros de ingresos aún. <a href="#" onclick="loadPage('ingreso')">Crear uno ahora</a>
+                </div>
             </div>
         `;
     }
     
     return `
-        <h2 class="mb-4">Registros de Ingresos</h2>
-        
-        <div class="card mb-4">
+        <div class="module-shell module-shell-registros registros-soft-shell">
+        <div class="module-header">
+            <h2 class="module-title">Registros de Ingresos</h2>
+        </div>
+
+        <div class="card mb-4 module-card registros-filter-card">
             <div class="card-body">
                 <div class="row mb-3">
                     <div class="col-md-6 mb-2">
@@ -2384,10 +2537,10 @@ async function loadRegistros() {
             </div>
         </div>
         
-        <div class="card">
+        <div class="card module-card registros-table-card">
             <div class="table-responsive">
                 <table class="table table-hover mb-0">
-                    <thead class="table-primary">
+                    <thead>
                         <tr>
                             <th>Ingreso</th>
                             <th>Cliente</th>
@@ -2417,22 +2570,28 @@ async function loadRegistros() {
                                     ${(ingreso.tecnico_cedula || ingreso.tecnico_telefono) ? `<br><small class="text-muted">${ingreso.tecnico_cedula ? `CC ${ingreso.tecnico_cedula}` : ''}${(ingreso.tecnico_cedula && ingreso.tecnico_telefono) ? ' · ' : ''}${ingreso.tecnico_telefono || ''}</small>` : ''}
                                 </td>
                                 <td>
-                                    <span class="badge bg-${getStatusColor(ingreso.estado_ingreso)}">
-                                        ${ingreso.estado_ingreso || 'pendiente'}
+                                    <span class="registros-status-chip ${getRegistroStatusClass(ingreso.estado_ingreso)}">
+                                        ${formatEstadoIngresoLabel(ingreso.estado_ingreso)}
                                     </span>
                                 </td>
-                                <td>$${ingreso.valor_total ? parseFloat(ingreso.valor_total).toLocaleString('es-CO') : '0'}</td>
-                                <td>
-                                    <button class="btn btn-sm btn-info" 
-                                            onclick="verDetalles(${ingreso.id})">
-                                        <i class="fas fa-eye"></i>
+                                <td class="registros-value-cell">$${ingreso.valor_total ? parseFloat(ingreso.valor_total).toLocaleString('es-CO') : '0'}</td>
+                                <td class="registros-actions-cell">
+                                    <div class="registros-row-actions">
+                                    <button class="btn registros-action-btn registros-action-btn-view"
+                                            onclick="verDetalles(${ingreso.id})"
+                                            title="Ver detalle">
+                                        <i class="fas fa-arrow-up-right-from-square"></i>
+                                        <span>Detalle</span>
                                     </button>
                                     ${user && user.rol === 'admin' && String(ingreso.estado_ingreso || '').toLowerCase() !== 'entregado' ? `
-                                        <button class="btn btn-sm btn-danger" 
-                                                onclick="deleteIngreso(${ingreso.id})">
-                                            <i class="fas fa-trash"></i>
+                                        <button class="btn registros-action-btn registros-action-btn-delete"
+                                                onclick="deleteIngreso(${ingreso.id})"
+                                                title="Eliminar ingreso">
+                                            <i class="fas fa-trash-can"></i>
+                                            <span>Eliminar</span>
                                         </button>
                                     ` : ''}
+                                    </div>
                                 </td>
                             </tr>
                         `;
@@ -2447,6 +2606,7 @@ async function loadRegistros() {
             <div class="card-footer">
                 <small id="registrosSummary">Total: ${response.total} ingresos | Página ${response.page} de ${response.pages}</small>
             </div>
+        </div>
         </div>
     `;
 }
@@ -2497,20 +2657,24 @@ async function filtrarRegistros(page = 1) {
                     ${(ingreso.tecnico_cedula || ingreso.tecnico_telefono) ? `<br><small class="text-muted">${ingreso.tecnico_cedula ? `CC ${ingreso.tecnico_cedula}` : ''}${(ingreso.tecnico_cedula && ingreso.tecnico_telefono) ? ' · ' : ''}${ingreso.tecnico_telefono || ''}</small>` : ''}
                 </td>
                 <td>
-                    <span class="badge bg-${getStatusColor(ingreso.estado_ingreso)}">
-                        ${ingreso.estado_ingreso || 'pendiente'}
+                    <span class="registros-status-chip ${getRegistroStatusClass(ingreso.estado_ingreso)}">
+                        ${formatEstadoIngresoLabel(ingreso.estado_ingreso)}
                     </span>
                 </td>
-                <td>$${ingreso.valor_total ? parseFloat(ingreso.valor_total).toLocaleString('es-CO') : '0'}</td>
-                <td>
-                    <button class="btn btn-sm btn-info" onclick="verDetalles(${ingreso.id})">
-                        <i class="fas fa-eye"></i>
+                <td class="registros-value-cell">$${ingreso.valor_total ? parseFloat(ingreso.valor_total).toLocaleString('es-CO') : '0'}</td>
+                <td class="registros-actions-cell">
+                    <div class="registros-row-actions">
+                    <button class="btn registros-action-btn registros-action-btn-view" onclick="verDetalles(${ingreso.id})" title="Ver detalle">
+                        <i class="fas fa-arrow-up-right-from-square"></i>
+                        <span>Detalle</span>
                     </button>
                     ${user && user.rol === 'admin' && String(ingreso.estado_ingreso || '').toLowerCase() !== 'entregado' ? `
-                        <button class="btn btn-sm btn-danger" onclick="deleteIngreso(${ingreso.id})">
-                            <i class="fas fa-trash"></i>
+                        <button class="btn registros-action-btn registros-action-btn-delete" onclick="deleteIngreso(${ingreso.id})" title="Eliminar ingreso">
+                            <i class="fas fa-trash-can"></i>
+                            <span>Eliminar</span>
                         </button>
                     ` : ''}
+                    </div>
                 </td>
             </tr>
         `).join('');
@@ -2562,17 +2726,20 @@ async function loadTecnicoPanel() {
     };
     
     return `
-        <h2 class="mb-4">Panel Técnico - Gestión de Reparaciones</h2>
+        <div class="module-shell module-shell-tecnico">
+        <div class="module-header">
+            <h2 class="module-title">Panel Técnico - Gestión de Reparaciones</h2>
+        </div>
 
         <div class="row g-2 mb-3">
-            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">Pendientes</small><div class="fw-bold">${counts.pendiente}</div></div></div>
-            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">En reparación</small><div class="fw-bold">${counts.en_reparacion}</div></div></div>
-            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">Reparados</small><div class="fw-bold">${counts.reparado}</div></div></div>
-            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">No reparables</small><div class="fw-bold">${counts.no_reparable}</div></div></div>
-            <div class="col-6 col-md-2"><div class="card p-2 text-center"><small class="text-muted">Entregados</small><div class="fw-bold">${counts.entregado}</div></div></div>
+            <div class="col-6 col-md-2"><div class="card p-2 text-center module-kpi-card"><small class="text-muted">Pendientes</small><div class="fw-bold">${counts.pendiente}</div></div></div>
+            <div class="col-6 col-md-2"><div class="card p-2 text-center module-kpi-card"><small class="text-muted">En reparación</small><div class="fw-bold">${counts.en_reparacion}</div></div></div>
+            <div class="col-6 col-md-2"><div class="card p-2 text-center module-kpi-card"><small class="text-muted">Reparados</small><div class="fw-bold">${counts.reparado}</div></div></div>
+            <div class="col-6 col-md-2"><div class="card p-2 text-center module-kpi-card"><small class="text-muted">No reparables</small><div class="fw-bold">${counts.no_reparable}</div></div></div>
+            <div class="col-6 col-md-2"><div class="card p-2 text-center module-kpi-card"><small class="text-muted">Entregados</small><div class="fw-bold">${counts.entregado}</div></div></div>
         </div>
         
-        <ul class="nav nav-tabs mb-4" role="tablist">
+        <ul class="nav nav-tabs module-tabs mb-4" role="tablist">
             <li class="nav-item">
                 <a class="nav-link ${hasGarantias ? '' : 'active'}" data-bs-toggle="tab" href="#pendientes">
                     <i class="fas fa-clock me-2"></i> Pendientes (${counts.pendiente})
@@ -2605,7 +2772,7 @@ async function loadTecnicoPanel() {
             </li>
         </ul>
         
-        <div class="tab-content">
+        <div class="tab-content admin-modern-content">
             <div id="pendientes" class="tab-pane fade ${hasGarantias ? '' : 'show active'}">
                 ${renderIngresosPorEstado(ingresos, 'pendiente')}
             </div>
@@ -2624,6 +2791,7 @@ async function loadTecnicoPanel() {
             <div id="garantias" class="tab-pane fade ${hasGarantias ? 'show active' : ''}">
                 ${renderGarantiasTab(garantias)}
             </div>
+        </div>
         </div>
     `;
 }
@@ -3001,7 +3169,7 @@ async function verDetalleGarantia(ingresoId) {
                     <div class="card-header bg-info text-white"><strong>Equipo y Garantía</strong></div>
                     <div class="card-body">
                         <p class="mb-1"><strong>Equipo:</strong> ${equipo || 'N/A'}</p>
-                        <p class="mb-1"><strong>IMEI:</strong> ${ingreso.imei || 'N/A'}</p>
+                        <p class="mb-1"><strong>IMEI:</strong> ${ingreso.imei_no_visible ? 'NO VISIBLE' : (ingreso.imei || 'N/A')}</p>
                         <p class="mb-1"><strong>Estado garantía:</strong> <span class="badge ${estadoClass}">${estadoLabel}</span></p>
                         <p class="mb-0"><strong>Motivo de ingreso a garantía:</strong> ${apertura ? limpiarTextoGarantia(apertura.contenido || '') : 'N/A'}</p>
                     </div>
@@ -3043,13 +3211,15 @@ async function verDetalleGarantia(ingresoId) {
         </div>
 
         <div class="d-flex gap-2">
-            <button class="btn btn-warning" onclick="abrirModalEstadoGarantia(${ingresoId}, 'abierta')" ${estadoActual === 'abierta' ? 'disabled' : ''}>
-                <i class="fas fa-rotate-left me-2"></i>Marcar pendiente
+            <button class="btn tecnico-action-btn tecnico-action-btn-warning" onclick="abrirModalEstadoGarantia(${ingresoId}, 'abierta')" ${estadoActual === 'abierta' ? 'disabled' : ''}>
+                <i class="fas fa-rotate-left"></i><span>Marcar pendiente</span>
             </button>
-            <button class="btn btn-success" onclick="abrirModalEstadoGarantia(${ingresoId}, 'resuelta')" ${estadoActual === 'resuelta' ? 'disabled' : ''}>
-                <i class="fas fa-check me-2"></i>Marcar resuelta
+            <button class="btn tecnico-action-btn tecnico-action-btn-success" onclick="abrirModalEstadoGarantia(${ingresoId}, 'resuelta')" ${estadoActual === 'resuelta' ? 'disabled' : ''}>
+                <i class="fas fa-check"></i><span>Marcar resuelta</span>
             </button>
-            <button class="btn btn-outline-secondary" onclick="loadPage('tecnico')">Volver al panel técnico</button>
+            <button class="btn tecnico-action-btn tecnico-action-btn-neutral" onclick="loadPage('tecnico')">
+                <i class="fas fa-arrow-left"></i><span>Volver al panel</span>
+            </button>
         </div>
     `;
 }
@@ -3058,7 +3228,7 @@ function renderIngresosPorEstado(ingresos, estado) {
     const filtrados = ingresos.filter(i => i.estado_ingreso === estado);
     
     return `
-        <div class="card">
+        <div class="card tecnico-soft-card">
             <div class="card-body p-0">
                 <div class="table-responsive">
                     <table class="table table-sm table-hover mb-0">
@@ -3081,13 +3251,13 @@ function renderIngresosPorEstado(ingresos, estado) {
                                         <br><small class="text-muted">CC: ${ingreso.cliente_cedula || 'N/A'} · ${ingreso.cliente_telefono || 'N/A'}</small>
                                     </td>
                                     <td>${ingreso.marca || ''} ${ingreso.modelo || ''}${ingreso.color ? ` · ${ingreso.color}` : ''}</td>
-                                    <td><span class="badge bg-info">${ingreso.estado_ingreso || 'pendiente'}</span></td>
+                                    <td><span class="registros-status-chip ${getRegistroStatusClass(ingreso.estado_ingreso)}">${formatEstadoIngresoLabel(ingreso.estado_ingreso)}</span></td>
                                     <td><small>${(() => { const d = new Date(ingreso.fecha_ingreso); const hh = String(d.getHours()).padStart(2, '0'); const mm = String(d.getMinutes()).padStart(2, '0'); return d.toLocaleDateString('es-ES') + ' ' + hh + ':' + mm; })()}</small></td>
                                     <td>
                                         <div class="d-flex flex-wrap gap-1 align-items-center tecnico-actions">
                                             ${getTecnicoEstadoActionButtons(ingreso.id, ingreso.estado_ingreso)}
-                                            <button class="btn btn-sm btn-info" onclick="verDetallesTecnico(${ingreso.id})">
-                                                Ver detalle
+                                            <button class="btn tecnico-action-btn tecnico-action-btn-detail" onclick="verDetallesTecnico(${ingreso.id})">
+                                                <i class="fas fa-arrow-up-right-from-square"></i><span>Detalle</span>
                                             </button>
                                         </div>
                                     </td>
@@ -3118,11 +3288,19 @@ function getTecnicoEstadoActionButtons(ingresoId, estadoActual) {
     };
 
     const styles = {
-        pendiente: 'btn-outline-secondary',
-        en_reparacion: 'btn-outline-primary',
-        reparado: 'btn-outline-success',
-        no_reparable: 'btn-outline-dark',
-        entregado: 'btn-success'
+        pendiente: 'tecnico-action-btn-neutral',
+        en_reparacion: 'tecnico-action-btn-primary',
+        reparado: 'tecnico-action-btn-success',
+        no_reparable: 'tecnico-action-btn-warning',
+        entregado: 'tecnico-action-btn-primary'
+    };
+
+    const icons = {
+        pendiente: 'fa-clock',
+        en_reparacion: 'fa-screwdriver-wrench',
+        reparado: 'fa-check',
+        no_reparable: 'fa-ban',
+        entregado: 'fa-box-open'
     };
 
     const opciones = transiciones[estadoActual] || [];
@@ -3132,8 +3310,8 @@ function getTecnicoEstadoActionButtons(ingresoId, estadoActual) {
 
     return opciones
         .map((estado) => `
-            <button type="button" class="btn btn-sm ${styles[estado] || 'btn-outline-secondary'}" onclick="cambiarEstadoIngreso(${ingresoId}, '${estado}')">
-                Mover a ${labels[estado] || estado}
+            <button type="button" class="btn tecnico-action-btn ${styles[estado] || 'tecnico-action-btn-neutral'}" onclick="cambiarEstadoIngreso(${ingresoId}, '${estado}')">
+                <i class="fas ${icons[estado] || 'fa-arrow-right'}"></i><span>${labels[estado] || estado}</span>
             </button>
         `)
         .join('');
@@ -3143,7 +3321,7 @@ function renderIngresosEntregadosEnLista(ingresos) {
     const entregados = ingresos.filter(i => i.estado_ingreso === 'entregado');
     
     const html = `
-        <div class="card">
+        <div class="card tecnico-soft-card">
             <div class="card-header">
                 <h5 class="mb-3">Ingresos Entregados</h5>
                 <input type="text" class="form-control" id="buscarEntregados" placeholder="Buscar por nombre, teléfono, cédula o número de ingreso...">
@@ -3174,8 +3352,8 @@ function renderIngresosEntregadosEnLista(ingresos) {
                                     <td><small>${ing.falla_general || 'N/A'}</small></td>
                                     <td><small>${new Date(ing.fecha_entrega || ing.fecha_ingreso).toLocaleDateString('es-ES')}</small></td>
                                     <td>
-                                        <button class="btn btn-sm btn-info" onclick="verDetallesTecnico(${ing.id})" title="Ver todos los detalles">
-                                            <i class="fas fa-eye"></i>
+                                        <button class="btn tecnico-action-btn tecnico-action-btn-detail" onclick="verDetallesTecnico(${ing.id})" title="Ver todos los detalles">
+                                            <i class="fas fa-arrow-up-right-from-square"></i><span>Detalle</span>
                                         </button>
                                     </td>
                                 </tr>
@@ -3224,104 +3402,9 @@ function renderIngresosEntregadosEnLista(ingresos) {
 async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
     if (!nuevoEstado) return;
     
-    // Si el estado es "entregado", mostrar modal de confirmación con valor
+    // Si el estado es "entregado", usar el modal único de pago/entrega
     if (nuevoEstado === 'entregado') {
-        // Obtener detalles del ingreso para mostrar el valor actual
-        const ingreso = await apiCall(`/ingresos/${ingresoId}`);
-        if (!ingreso) {
-            showAlert('Error al obtener detalles del ingreso', 'danger');
-            return;
-        }
-        
-        const modal = document.createElement('div');
-        modal.className = 'modal fade';
-        modal.id = 'modalEstadoEntrega';
-        modal.setAttribute('tabindex', '-1');
-        modal.innerHTML = `
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Confirmar Entrega</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <p><strong>Ingreso:</strong> ${ingreso.numero_ingreso}</p>
-                        <p><strong>Cliente:</strong> ${ingreso.cliente_nombre} ${ingreso.cliente_apellido}</p>
-                        <p><strong>Valor actual de reparación:</strong> $ ${ingreso.valor_total?.toLocaleString() || '0'}</p>
-                        
-                        <div class="mb-3">
-                            <label class="form-label">¿Este es el valor final de reparación?</label>
-                            <div class="form-check">
-                                <input class="form-check-input" type="radio" name="confirmarValor" id="valorCorrecto" value="si" checked>
-                                <label class="form-check-label" for="valorCorrecto">
-                                    Sí, el valor es correcto
-                                </label>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input" type="radio" name="confirmarValor" id="valorIncorrecto" value="no">
-                                <label class="form-check-label" for="valorIncorrecto">
-                                    No, necesito ajustar el valor
-                                </label>
-                            </div>
-                        </div>
-
-                        <div class="form-check mb-3">
-                            <input class="form-check-input" type="checkbox" id="pagoRecibido" checked>
-                            <label class="form-check-label" for="pagoRecibido">
-                                Marcar como pagado al entregar
-                            </label>
-                        </div>
-
-                        <div class="form-check mb-3">
-                            <input class="form-check-input" type="checkbox" id="soloPagoAnticipado">
-                            <label class="form-check-label" for="soloPagoAnticipado">
-                                Registrar pago anticipado (NO entregar equipo)
-                            </label>
-                        </div>
-                        
-                        <div id="ajusteValor" style="display: none;">
-                            <label class="form-label">Nuevo valor de reparación:</label>
-                            <input type="number" class="form-control" id="nuevoValor" min="0" step="1000" placeholder="Ingrese el valor final">
-                            <label class="form-label mt-2">Motivo del ajuste:</label>
-                            <textarea class="form-control" id="motivoAjuste" rows="2" placeholder="Describe por qué cambió el valor"></textarea>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                        <button type="button" class="btn btn-success" onclick="procesarEntrega(${ingresoId})">
-                            <i class="fas fa-check me-2"></i> Confirmar Entrega
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        document.body.appendChild(modal);
-        
-        // Configurar event listeners para el modal
-        const radios = modal.querySelectorAll('input[name="confirmarValor"]');
-        const ajusteDiv = modal.querySelector('#ajusteValor');
-        const nuevoValorInput = modal.querySelector('#nuevoValor');
-        
-        radios.forEach(radio => {
-            radio.addEventListener('change', function() {
-                if (this.value === 'no') {
-                    ajusteDiv.style.display = 'block';
-                    nuevoValorInput.focus();
-                } else {
-                    ajusteDiv.style.display = 'none';
-                }
-            });
-        });
-        
-        const bs_modal = new bootstrap.Modal(modal);
-        bs_modal.show();
-        
-        // Limpiar el modal después de cerrar
-        modal.addEventListener('hidden.bs.modal', () => {
-            modal.remove();
-        });
-        
+        await openQuickEntregaModal(ingresoId);
         return;
     }
     
@@ -3336,97 +3419,14 @@ async function cambiarEstadoIngreso(ingresoId, nuevoEstado) {
     }
 }
 
-async function procesarEntrega(ingresoId) {
-    try {
-        // Verificar si se debe ajustar el valor
-        const confirmarValor = document.querySelector('input[name="confirmarValor"]:checked')?.value;
-        const pagoRecibido = document.getElementById('pagoRecibido')?.checked;
-        const soloPagoAnticipado = document.getElementById('soloPagoAnticipado')?.checked;
-        let nuevoValor = null;
-        let motivoAjuste = '';
-        
-        if (confirmarValor === 'no') {
-            nuevoValor = parseFloat(document.getElementById('nuevoValor').value);
-            if (isNaN(nuevoValor) || nuevoValor < 0) {
-                showAlert('Por favor ingrese un valor válido', 'warning');
-                return;
-            }
-
-            motivoAjuste = (document.getElementById('motivoAjuste')?.value || '').trim();
-            if (!motivoAjuste) {
-                showAlert('Debes ingresar el motivo del ajuste', 'warning');
-                return;
-            }
-        }
-        
-        // Si hay un nuevo valor, actualizarlo primero
-        if (nuevoValor !== null) {
-            const dataValor = { valor_total: nuevoValor };
-            const responseValor = await apiCall(`/ingresos/${ingresoId}`, {
-                method: 'PUT',
-                body: JSON.stringify(dataValor)
-            });
-            
-            if (!responseValor || !responseValor.success) {
-                showAlert('Error al actualizar el valor: ' + (responseValor?.error || 'desconocido'), 'danger');
-                return;
-            }
-
-            await apiCall(`/ingresos/${ingresoId}/notas`, {
-                method: 'POST',
-                body: JSON.stringify({
-                    contenido: `AJUSTE DE VALOR FINAL: ${motivoAjuste}. Nuevo valor: $${nuevoValor.toLocaleString('es-CO', { maximumFractionDigits: 0 })}`,
-                    tipo: 'administrativa'
-                })
-            });
-        }
-        
-        // Marcar como entregado
-        const data = soloPagoAnticipado
-            ? { estado_pago: pagoRecibido ? 'pagado' : 'pendiente' }
-            : {
-                estado_ingreso: 'entregado',
-                estado_pago: pagoRecibido ? 'pagado' : 'pendiente'
-            };
-        const response = await apiCall(`/ingresos/${ingresoId}`, {
-            method: 'PUT',
-            body: JSON.stringify(data)
-        });
-        
-        if (response && response.success) {
-            // Cerrar el modal dinámico
-            const modal = document.getElementById('modalEstadoEntrega');
-            if (modal) {
-                const modalInstance = bootstrap.Modal.getInstance(modal);
-                if (modalInstance) {
-                    modalInstance.hide();
-                }
-                // Remover el modal del DOM
-                setTimeout(() => {
-                    modal.remove();
-                    // Remover backdrop
-                    const backdrop = document.querySelector('.modal-backdrop');
-                    if (backdrop) backdrop.remove();
-                    document.body.classList.remove('modal-open');
-                }, 500);
-            }
-            
-            showAlert(soloPagoAnticipado ? 'Pago anticipado registrado sin cambiar estado del equipo' : 'Ingreso marcado como entregado correctamente', 'success');
-            loadPage('tecnico'); // Recargar el panel
-        } else {
-            showAlert('Error al marcar como entregado: ' + (response?.error || 'desconocido'), 'danger');
-        }
-    } catch (error) {
-        console.error('Error en procesarEntrega:', error);
-        showAlert('Error de conexión: ' + error.message, 'danger');
-    }
-}
-
 async function loadAdminPanel() {
     return `
-        <h2 class="mb-4">Panel de Administración</h2>
+        <div class="module-shell module-shell-admin">
+        <div class="module-header">
+            <h2 class="module-title">Panel de Administración</h2>
+        </div>
         
-        <ul class="nav nav-tabs mb-4" role="tablist">
+        <ul class="nav nav-tabs module-tabs mb-4" role="tablist">
             <li class="nav-item">
                 <a class="nav-link ${adminActiveTab === 'usuarios' ? 'active' : ''}" data-bs-toggle="tab" href="#usuarios">
                     <i class="fas fa-users me-2"></i> Usuarios
@@ -3494,6 +3494,7 @@ async function loadAdminPanel() {
             <div id="respaldo" class="tab-pane fade ${adminActiveTab === 'respaldo' ? 'show active' : ''}">
                 ${await loadAdminRespaldo()}
             </div>
+        </div>
         </div>
     `;
 }
@@ -4997,20 +4998,33 @@ async function verDetalles(ingresoId) {
     const catalogacionPendiente = Boolean(response.equipo_no_lista);
     const equipoMarcaTexto = catalogacionPendiente ? 'PENDIENTE POR ADMIN' : clean(response.marca);
     const equipoModeloTexto = catalogacionPendiente ? 'PENDIENTE POR ADMIN' : clean(response.modelo);
+    const telefonoWhatsapp = getWhatsappE164(response.cliente_telefono || '');
+    const whatsappDisponible = !!telefonoWhatsapp;
 
     const mainContent = document.getElementById('mainContent');
     mainContent.innerHTML = `
-        <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="details-modern-shell">
+        <div class="details-header-bar mb-4">
             <h2 class="mb-0">Detalles del Ingreso: <strong>${response.numero_ingreso}</strong></h2>
-            <button class="btn btn-secondary" onclick="loadPage('registros')">
-                <i class="fas fa-arrow-left me-2"></i>Volver
-            </button>
+            <div class="details-header-actions">
+                <button class="btn details-modern-btn details-modern-btn-neutral" onclick="loadPage('registros')">
+                    <i class="fas fa-arrow-left"></i><span>Volver</span>
+                </button>
+                <button class="btn details-modern-btn details-modern-btn-whatsapp" ${!whatsappDisponible ? 'disabled' : ''}
+                    onclick="openWhatsappChat('${telefonoWhatsapp}', '${String(clean(response.cliente_nombre, '')).replace(/'/g, "\\'")} ${String(clean(response.cliente_apellido, '')).replace(/'/g, "\\'")}'.trim(), '${String(response.numero_ingreso || '').replace(/'/g, "\\'")}')"
+                    title="${whatsappDisponible ? 'Abrir WhatsApp del cliente' : 'Cliente sin teléfono válido para WhatsApp'}">
+                    <i class="fab fa-whatsapp"></i><span>WhatsApp</span>
+                </button>
+                <button class="btn details-modern-btn details-modern-btn-primary" onclick="printTicket(${ingresoId})">
+                    <i class="fas fa-print"></i><span>Imprimir Ticket</span>
+                </button>
+            </div>
         </div>
 
         <div class="row">
             <div class="col-lg-6">
-                <div class="card mb-3">
-                    <div class="card-header bg-primary text-white">
+                <div class="card mb-3 details-modern-card">
+                    <div class="card-header details-modern-card-header">
                         <h5 class="mb-0">Datos del Cliente</h5>
                     </div>
                     <div class="card-body">
@@ -5023,18 +5037,18 @@ async function verDetalles(ingresoId) {
             </div>
 
             <div class="col-lg-6">
-                <div class="card mb-3">
-                    <div class="card-header bg-info text-white">
+                <div class="card mb-3 details-modern-card">
+                    <div class="card-header details-modern-card-header">
                         <h5 class="mb-0">Datos del Equipo</h5>
                     </div>
                     <div class="card-body">
                         <p><strong>Marca:</strong> ${equipoMarcaTexto}</p>
                         <p><strong>Modelo:</strong> ${equipoModeloTexto}</p>
-                        ${catalogacionPendiente ? '<p><span class="badge bg-warning text-dark">Pendiente de catalogación por admin</span></p>' : ''}
+                        ${catalogacionPendiente ? '<p><span class="registros-status-chip is-unrepairable">pendiente catalogación admin</span></p>' : ''}
                         <p><strong>Color:</strong> ${clean(response.color)}</p>
-                        <p><strong>IMEI:</strong> ${clean(response.imei)}</p>
+                        <p><strong>IMEI:</strong> ${response.imei_no_visible ? 'NO VISIBLE' : clean(response.imei)}</p>
                         <p><strong>Clave:</strong> ${claveTexto}</p>
-                        <p><strong>Estado:</strong> <span class="badge bg-${getStatusColor(response.estado_ingreso)}">${clean(response.estado_ingreso)}</span></p>
+                        <p><strong>Estado:</strong> <span class="registros-status-chip ${getRegistroStatusClass(response.estado_ingreso)}">${formatEstadoIngresoLabel(response.estado_ingreso)}</span></p>
                     </div>
                 </div>
             </div>
@@ -5042,8 +5056,8 @@ async function verDetalles(ingresoId) {
 
         <div class="row">
             <div class="col-lg-6">
-                <div class="card mb-3">
-                    <div class="card-header bg-secondary text-white">
+                <div class="card mb-3 details-modern-card">
+                    <div class="card-header details-modern-card-header">
                         <h5 class="mb-0">Condición del Ingreso</h5>
                     </div>
                     <div class="card-body">
@@ -5058,8 +5072,8 @@ async function verDetalles(ingresoId) {
             </div>
 
             <div class="col-lg-6">
-                <div class="card mb-3">
-                    <div class="card-header bg-dark text-white">
+                <div class="card mb-3 details-modern-card">
+                    <div class="card-header details-modern-card-header">
                         <h5 class="mb-0">Estado y Fechas</h5>
                     </div>
                     <div class="card-body">
@@ -5075,8 +5089,8 @@ async function verDetalles(ingresoId) {
             </div>
         </div>
 
-        <div class="card mb-3">
-            <div class="card-header bg-warning">
+        <div class="card mb-3 details-modern-card">
+            <div class="card-header details-modern-card-header">
                 <h5 class="mb-0">Fallas Diagnosticadas</h5>
             </div>
             <div class="card-body">
@@ -5094,7 +5108,7 @@ async function verDetalles(ingresoId) {
                                 <tr>
                                     <td>${clean(f.nombre)}</td>
                                     <td>$${Number(f.valor_reparacion || 0).toLocaleString('es-CO')}</td>
-                                    <td><span class="badge bg-info">${clean(f.estado_falla)}</span></td>
+                                    <td><span class="registros-status-chip is-repair">${clean(f.estado_falla)}</span></td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -5103,8 +5117,8 @@ async function verDetalles(ingresoId) {
             </div>
         </div>
 
-        <div class="card mb-4">
-            <div class="card-header bg-light">
+        <div class="card mb-4 details-modern-card">
+            <div class="card-header details-modern-card-header">
                 <h5 class="mb-0">Detalle y Notas</h5>
             </div>
             <div class="card-body">
@@ -5113,20 +5127,51 @@ async function verDetalles(ingresoId) {
             </div>
         </div>
 
-        <div class="d-flex gap-2">
-            <button class="btn btn-primary" onclick="loadPage('registros')">
-                <i class="fas fa-arrow-left me-2"></i> Volver
-            </button>
+        <div class="d-flex gap-2 flex-wrap">
             ${isAdmin && catalogacionPendiente ? `
-                <button class="btn btn-warning" onclick="completarCatalogacionIngreso(${ingresoId})">
-                    <i class="fas fa-tags me-2"></i> Completar marca/modelo
+                <button class="btn details-modern-btn details-modern-btn-warning" onclick="completarCatalogacionIngreso(${ingresoId})">
+                    <i class="fas fa-tags"></i><span>Completar marca/modelo</span>
                 </button>
             ` : ''}
-            <button class="btn btn-success" onclick="printTicket(${ingresoId})">
-                <i class="fas fa-print me-2"></i> Imprimir Ticket
-            </button>
+        </div>
         </div>
     `;
+}
+
+function getWhatsappE164(rawPhone) {
+    const digits = sanitizeOnlyDigits(rawPhone || '');
+    if (!digits) return '';
+
+    if (digits.length === 10) {
+        return `57${digits}`;
+    }
+
+    if (digits.length === 12 && digits.startsWith('57')) {
+        return digits;
+    }
+
+    if (digits.length >= 11 && digits.length <= 15) {
+        return digits;
+    }
+
+    return '';
+}
+
+function openWhatsappChat(phoneE164, clienteNombre = '', numeroIngreso = '') {
+    const phone = String(phoneE164 || '').trim();
+    if (!phone) {
+        showAlert('El cliente no tiene un teléfono válido para WhatsApp', 'warning');
+        return;
+    }
+
+    const nombre = String(clienteNombre || '').trim();
+    const ingreso = String(numeroIngreso || '').trim();
+    const mensajeBase = ingreso
+        ? `Hola ${nombre || ''}, te contactamos de CELUPRO por el ingreso #${ingreso}.`
+        : `Hola ${nombre || ''}, te contactamos de CELUPRO.`;
+    const mensaje = mensajeBase.replace(/\s+/g, ' ').trim();
+    const url = `https://wa.me/${phone}?text=${encodeURIComponent(mensaje)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
 }
 
 async function completarCatalogacionIngreso(ingresoId) {
@@ -5289,11 +5334,11 @@ async function verDetallesTecnico(ingresoId) {
             : new Date(response.fecha_ingreso).toLocaleString('es-ES');
         
         reparacionInfo = `
-            <div class="alert alert-success mb-4" style="border-left: 5px solid #28a745;">
+            <div class="alert alert-success mb-4 details-modern-alert-success">
                 <div class="row align-items-center">
                     <div class="col-md-8">
-                        <h5 class="mb-2"><i class="fas fa-check-circle me-2" style="color: #28a745;"></i>Ingreso Entregado</h5>
-                        <p class="mb-1"><strong>Resultado de Reparación:</strong> <span style="font-size: 1.1em; color: #28a745;">${estadoReparacion}</span></p>
+                        <h5 class="mb-2"><i class="fas fa-check-circle me-2"></i>Ingreso Entregado</h5>
+                        <p class="mb-1"><strong>Resultado de Reparación:</strong> <span class="details-modern-delivery-result">${estadoReparacion}</span></p>
                         <p class="mb-0"><strong>Fecha y Hora de Entrega:</strong> ${fechaEntrega}</p>
                     </div>
                 </div>
@@ -5307,8 +5352,8 @@ async function verDetallesTecnico(ingresoId) {
 
     const garantiaHistorialHtml = garantiaMovimientos.length > 0
         ? `
-            <div class="card mb-4">
-                <div class="card-header bg-warning">
+            <div class="card mb-4 details-modern-card">
+                <div class="card-header details-modern-card-header">
                     <h5 class="mb-0">Historial de Garantía</h5>
                 </div>
                 <div class="card-body">
@@ -5331,16 +5376,16 @@ async function verDetallesTecnico(ingresoId) {
                                         resuelta: 'Resuelta'
                                     }[estado] || 'Pendiente';
                                     const estadoClass = {
-                                        abierta: 'bg-warning text-dark',
-                                        en_gestion: 'bg-primary',
-                                        resuelta: 'bg-success'
-                                    }[estado] || 'bg-secondary';
+                                        abierta: 'is-pending',
+                                        en_gestion: 'is-repair',
+                                        resuelta: 'is-repaired'
+                                    }[estado] || 'is-default';
 
                                     return `
                                         <tr>
                                             <td><small>${mov.fecha_creacion ? new Date(mov.fecha_creacion).toLocaleString('es-ES') : 'N/A'}</small></td>
                                             <td><small>${mov.usuario || 'N/A'}</small></td>
-                                            <td><span class="badge ${estadoClass}">${estadoLabel}</span></td>
+                                            <td><span class="registros-status-chip ${estadoClass}">${estadoLabel}</span></td>
                                             <td><small>${limpiarTextoGarantia(mov.contenido || '') || 'Sin detalle'}</small></td>
                                         </tr>
                                     `;
@@ -5354,20 +5399,21 @@ async function verDetallesTecnico(ingresoId) {
         : '';
     
     mainContent.innerHTML = `
+        <div class="details-modern-shell">
         <input type="hidden" id="detalleIngresoId" value="${ingresoId}">
         <input type="hidden" id="detalleEstadoActual" value="${response.estado_ingreso}">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <div class="details-header-bar mb-4">
             <h2 class="mb-0">Detalles del Ingreso: <strong>${response.numero_ingreso}</strong></h2>
-            <button class="btn btn-secondary" onclick="loadPage('tecnico')">
-                <i class="fas fa-arrow-left me-2"></i>Volver
+            <button class="btn details-modern-btn details-modern-btn-neutral" onclick="loadPage('tecnico')">
+                <i class="fas fa-arrow-left"></i><span>Volver</span>
             </button>
         </div>
         
         ${reparacionInfo}
         ${garantiaHistorialHtml}
         
-        <div class="card mb-4">
-            <div class="card-header bg-primary text-white">
+        <div class="card mb-4 details-modern-card">
+            <div class="card-header details-modern-card-header">
                 <h5 class="mb-0">Información General</h5>
             </div>
             <div class="card-body">
@@ -5382,7 +5428,7 @@ async function verDetallesTecnico(ingresoId) {
                         <p><strong>Equipo:</strong> ${response.marca} ${response.modelo}</p>
                         <p><strong>Color:</strong> ${response.color || 'N/A'}</p>
                         <p><strong>Falla General:</strong> ${response.falla_general || 'N/A'}</p>
-                        <p><strong>Estado:</strong> <span class="badge bg-warning" style="font-size: 0.9em;">${response.estado_ingreso}</span></p>
+                        <p><strong>Estado:</strong> <span class="registros-status-chip ${getRegistroStatusClass(response.estado_ingreso)}">${formatEstadoIngresoLabel(response.estado_ingreso)}</span></p>
                     </div>
                 </div>
                 <hr>
@@ -5391,7 +5437,7 @@ async function verDetallesTecnico(ingresoId) {
                         <p><strong>Fecha de Ingreso:</strong> ${new Date(response.fecha_ingreso).toLocaleString('es-ES')}</p>
                     </div>
                     <div class="col-md-6">
-                        <p><strong>Valor Total:</strong> <span style="font-size: 1.2em; color: #28a745;"><strong>$${response.valor_total || 0}</strong></span></p>
+                        <p><strong>Valor Total:</strong> <span class="details-modern-money"><strong>$${response.valor_total || 0}</strong></span></p>
                     </div>
                 </div>
             </div>
@@ -5399,8 +5445,8 @@ async function verDetallesTecnico(ingresoId) {
         
         <div class="row">
             <div class="col-md-8">
-                <div class="card mb-4">
-                    <div class="card-header bg-success text-white">
+                <div class="card mb-4 details-modern-card">
+                    <div class="card-header details-modern-card-header">
                         <h5 class="mb-0">Fallas y Reparaciones</h5>
                     </div>
                     <div class="card-body">
@@ -5440,10 +5486,10 @@ async function verDetallesTecnico(ingresoId) {
                                                     </select>
                                                 </td>
                                                 <td>
-                                                    <button class="btn btn-sm btn-danger" 
+                                                    <button class="btn details-modern-btn details-modern-btn-delete" 
                                                             ${ingresoBloqueado ? 'disabled' : ''}
                                                             onclick="removeFalla(${f.id})">
-                                                        <i class="fas fa-trash"></i>
+                                                        <i class="fas fa-trash-can"></i><span>Quitar</span>
                                                     </button>
                                                 </td>
                                             </tr>
@@ -5453,16 +5499,16 @@ async function verDetallesTecnico(ingresoId) {
                             </div>
                         ` : '<p class="text-muted">Sin fallas registradas</p>'}
                         
-                        <button class="btn btn-sm btn-primary" ${ingresoBloqueado ? 'disabled' : ''} onclick="addNewFalla(${ingresoId})">
-                            <i class="fas fa-plus me-2"></i> Agregar Falla
+                        <button class="btn details-modern-btn details-modern-btn-primary" ${ingresoBloqueado ? 'disabled' : ''} onclick="addNewFalla(${ingresoId})">
+                            <i class="fas fa-plus"></i><span>Agregar Falla</span>
                         </button>
                     </div>
                 </div>
             </div>
             
             <div class="col-md-4">
-                <div class="card">
-                    <div class="card-header bg-info text-white">
+                <div class="card details-modern-card">
+                    <div class="card-header details-modern-card-header">
                         <h5 class="mb-0">Acciones</h5>
                     </div>
                     <div class="card-body">
@@ -5476,22 +5522,23 @@ async function verDetallesTecnico(ingresoId) {
                             </select>
                             <small class="text-muted">${ingresoBloqueado ? 'Estado bloqueado por trazabilidad. Usa garantía para reingresar.' : 'Cambia el estado desde la lista para aplicar inmediatamente.'}</small>
                             ${response.estado_ingreso === 'entregado' ? `
-                                <div class="border rounded p-2 bg-light">
+                                <div class="details-modern-garantia-box">
                                     <label class="form-label mb-1"><strong>Garantía</strong></label>
                                     <textarea class="form-control form-control-sm mb-2" id="garantiaComentario_${ingresoId}" rows="3" placeholder="Motivo de garantía (obligatorio)"></textarea>
-                                    <button class="btn btn-warning btn-sm w-100" onclick="procesarGarantiaEntregado(${ingresoId})">
-                                        <i class="fas fa-shield-alt me-2"></i>Ingresar por Garantía
+                                    <button class="btn details-modern-btn details-modern-btn-warning w-100" onclick="procesarGarantiaEntregado(${ingresoId})">
+                                        <i class="fas fa-shield-halved"></i><span>Ingresar por Garantía</span>
                                     </button>
                                 </div>
                             ` : ''}
-                            <button class="btn btn-success" onclick="printTicket(${ingresoId})">
-                                <i class="fas fa-print me-2"></i> Imprimir Ticket
+                            <button class="btn details-modern-btn details-modern-btn-primary" onclick="printTicket(${ingresoId})">
+                                <i class="fas fa-print"></i><span>Imprimir Ticket</span>
                             </button>
                         </div>
                     </div>
                     </div>
                 </div>
             </div>
+        </div>
         </div>
     `;
 }
@@ -5505,6 +5552,32 @@ function getStatusColor(estado) {
         'cancelado': 'danger'
     };
     return colors[estado] || 'secondary';
+}
+
+function getRegistroStatusClass(estado) {
+    const status = String(estado || '').trim().toLowerCase();
+    const statusClass = {
+        pendiente: 'is-pending',
+        en_reparacion: 'is-repair',
+        reparado: 'is-repaired',
+        no_reparable: 'is-unrepairable',
+        entregado: 'is-delivered',
+        cancelado: 'is-cancelled'
+    };
+    return statusClass[status] || 'is-default';
+}
+
+function formatEstadoIngresoLabel(estado) {
+    const status = String(estado || 'pendiente').trim().toLowerCase();
+    const labels = {
+        pendiente: 'pendiente',
+        en_reparacion: 'en reparación',
+        reparado: 'reparado',
+        no_reparable: 'no reparable',
+        entregado: 'entregado',
+        cancelado: 'cancelado'
+    };
+    return labels[status] || status.replace(/_/g, ' ');
 }
 
 function showConfirmModal(message, options = {}) {
@@ -5740,6 +5813,8 @@ function simulatePrint(ticketData, paymentMeta = null) {
                         line-height: ${lineHeight};
                     }
                     .ticket { padding: 12px 10px; }
+                    .logo { text-align:center; margin-bottom:8px; }
+                    .logo img { max-width:${Math.max(150, paperMaxWidthPx - 30)}px; max-height:${paperWidthMm >= 76 ? 90 : 80}px; }
                     .header { text-align:center; font-weight:800; font-size:${headerFontSizePx}px; margin-bottom:10px; }
                     .numero { font-size:${numeroFontSizePx}px; font-weight:800; text-align:center; margin:8px 0; }
                     .section-title { margin-top:8px; margin-bottom:4px; font-weight:800; }
@@ -5749,7 +5824,11 @@ function simulatePrint(ticketData, paymentMeta = null) {
             </head>
             <body>
                 <div class="ticket">
+                    ${logoUrl ? `<div class="logo"><img id="ticket-logo" src="${logoUrl}" alt="Logo"></div>` : ''}
                     <div class="header">${escapeHtml(nombreNegocio)}</div>
+                    ${telefonoNegocio ? `<div class="small" style="text-align:center;">Tel: ${escapeHtml(telefonoNegocio)}</div>` : ''}
+                    ${direccionNegocio ? `<div class="small" style="text-align:center;">${escapeHtml(direccionNegocio)}</div>` : ''}
+                    ${ticketEncabezadoLines.length ? `<div class="small" style="text-align:center;">${ticketEncabezadoLines.map((line) => escapeHtml(line)).join('<br>')}</div>` : ''}
                     <div class="numero">Ticket de Pago #${escapeHtml(ticketData.numero_ingreso)}</div>
 
                     <div class="section-title">CLIENTE</div>
@@ -5897,7 +5976,7 @@ function simulatePrint(ticketData, paymentMeta = null) {
                 <div class="section-title">EQUIPO</div>
                 <div>${equipoTexto}</div>
                 <div>Color: ${clean(ingreso.color)}</div>
-                <div>IMEI: ${clean(ingreso.imei)}</div>
+                <div>IMEI: ${ingreso.imei_no_visible ? 'NO VISIBLE' : clean(ingreso.imei)}</div>
                 <div>Clave: ${claveTexto}</div>
                 <div>Garantía: ${yesNo(ingreso.garantia)}</div>
                 <div>Apagado: ${yesNo(ingreso.estado_apagado)}</div>
@@ -5925,7 +6004,7 @@ function simulatePrint(ticketData, paymentMeta = null) {
                 <div>Fecha/Hora: ${fechaSistema}</div>
                 <div>Equipo: ${equipoTexto}</div>
                 <div>Color: ${clean(ingreso.color)}</div>
-                <div>IMEI: ${clean(ingreso.imei)}</div>
+                <div>IMEI: ${ingreso.imei_no_visible ? 'NO VISIBLE' : clean(ingreso.imei)}</div>
                 <div>Clave: ${claveTexto}</div>
                 <div>Garantía: ${yesNo(ingreso.garantia)}</div>
                 <div>Apagado: ${yesNo(ingreso.estado_apagado)}</div>
@@ -7455,9 +7534,47 @@ function setupIngresoFieldRestrictions() {
     const imeiInput = document.getElementById('imei');
     if (imeiInput) {
         imeiInput.addEventListener('input', () => {
-            imeiInput.value = sanitizeOnlyDigits(imeiInput.value, 15);
+            imeiInput.value = String(imeiInput.value || '')
+                .replace(/[^0-9\s,;\/|-]/g, '')
+                .replace(/\s{2,}/g, ' ')
+                .trimStart();
+
+            const onlyDigits = imeiInput.value.replace(/\D/g, '');
+            if (onlyDigits.length > 30) {
+                let digitCount = 0;
+                imeiInput.value = imeiInput.value
+                    .split('')
+                    .filter((char) => {
+                        if (/\d/.test(char)) {
+                            digitCount += 1;
+                            return digitCount <= 30;
+                        }
+                        return digitCount < 30;
+                    })
+                    .join('');
+            }
+
+            updateImeiCountHint();
+        });
+
+        imeiInput.addEventListener('blur', () => {
+            const imeiNoVisible = !!document.getElementById('imei_no_visible')?.checked;
+            if (imeiNoVisible) return;
+
+            const parsed = parseImeiList(imeiInput.value || '');
+            if (parsed.ok) {
+                imeiInput.value = parsed.normalized;
+            }
+            updateImeiCountHint();
         });
     }
+
+    const imeiNoVisibleCheckbox = document.getElementById('imei_no_visible');
+    if (imeiNoVisibleCheckbox) {
+        imeiNoVisibleCheckbox.addEventListener('change', toggleImeiNoVisible);
+    }
+
+    toggleImeiNoVisible();
 }
 
 async function nextWizardStep() {
@@ -7521,15 +7638,18 @@ async function nextWizardStep() {
         const modelo = document.getElementById('modelo_id')?.value;
         const equipoNoLista = document.getElementById('equipo_no_lista')?.checked === true;
         const imei = document.getElementById('imei')?.value.trim();
+        const imeiNoVisible = document.getElementById('imei_no_visible')?.checked === true;
         const tecnicoId = document.getElementById('tecnico_id')?.value;
         
         const faltaCatalogo = !equipoNoLista && (!marca || !modelo);
-        const imeiInvalido = !/^\d{15}$/.test(imei || '');
+        const parsedImei = parseImeiList(imei || '');
+        const imeiInvalido = !imeiNoVisible && !parsedImei.ok;
 
         if (faltaCatalogo || imeiInvalido || !tecnicoId) {
-            const mensaje = equipoNoLista
-                ? 'Complete IMEI (15 dígitos) y técnico asignado'
-                : 'Complete Marca, Modelo, IMEI (15 dígitos) y técnico asignado';
+            const base = equipoNoLista
+                ? 'Complete IMEI válido (1 o 2 de 15 dígitos) o marca "IMEI no visible", y técnico asignado'
+                : 'Complete Marca, Modelo, IMEI válido (1 o 2 de 15 dígitos) o marca "IMEI no visible", y técnico asignado';
+            const mensaje = imeiInvalido && parsedImei.error ? `${base}. ${parsedImei.error}` : base;
             showWizardStepAlert(2, mensaje, 'warning');
             return;
         }
@@ -7579,7 +7699,7 @@ function updateWizardDisplay() {
         paso5.style.display = 'none';
         
         // Mostrar el paso actual
-        document.getElementById(`paso${currentWizardStep}`).style.display = 'block';
+        document.getElementById(`paso${currentWizardStep}`).style.display = 'flex';
         
         // Scroll hacia arriba
         const wizard = document.querySelector('.ingreso-wizard');

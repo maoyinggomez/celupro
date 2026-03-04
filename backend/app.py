@@ -96,6 +96,40 @@ def _normalize_cedula(value):
     return ''.join(ch for ch in str(value or '').upper().strip() if ch.isalnum())
 
 
+def _to_bool(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'si', 'sí', 'yes', 'on')
+    return bool(value)
+
+
+def _normalize_imei_value(value):
+    raw = str(value or '').strip()
+    digits_only = re.sub(r'\D', '', raw)
+    has_separator = bool(re.search(r'[\s,;/|-]+', raw))
+
+    if not raw:
+        return None, 'Debes ingresar al menos un IMEI válido'
+
+    if not has_separator and len(digits_only) == 30:
+        imeis = [digits_only[:15], digits_only[15:30]]
+    else:
+        imeis = [part.strip() for part in re.split(r'[^0-9]+', raw) if part.strip()]
+
+    if not imeis:
+        return None, 'Debes ingresar al menos un IMEI válido'
+
+    if len(imeis) > 2:
+        return None, 'Solo se permiten máximo 2 IMEIs por equipo'
+
+    if any((not imei.isdigit()) or len(imei) != 15 for imei in imeis):
+        return None, 'Cada IMEI debe tener exactamente 15 números'
+
+    if len(set(imeis)) != len(imeis):
+        return None, 'No repitas el mismo IMEI dos veces'
+
+    return ' / '.join(imeis), None
+
+
 def _safe_backup_path(filename):
     backup_dir = Path(__file__).resolve().parent.parent / 'backups'
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -731,15 +765,20 @@ def create_ingreso():
     if cliente_telefono and not cliente_telefono.isdigit():
         return jsonify({'error': 'El teléfono del cliente solo debe contener números'}), 400
 
-    imei = str(data.get('imei', '') or '').strip()
-    if not imei.isdigit() or len(imei) != 15:
-        return jsonify({'error': 'El IMEI debe contener exactamente 15 números'}), 400
+    imei_no_visible = _to_bool(data.get('imei_no_visible', False))
+    if imei_no_visible:
+        imei = ''
+    else:
+        imei, imei_error = _normalize_imei_value(data.get('imei', ''))
+        if imei_error:
+            return jsonify({'error': imei_error}), 400
 
     data['cliente_nombre'] = cliente_nombre
     data['cliente_apellido'] = cliente_apellido
     data['cliente_cedula'] = cliente_cedula
     data['cliente_telefono'] = cliente_telefono
     data['imei'] = imei
+    data['imei_no_visible'] = imei_no_visible
 
     tiene_clave_raw = data.get('tiene_clave', False)
     if isinstance(tiene_clave_raw, str):
@@ -861,7 +900,7 @@ def delete_ingreso(ingreso_id):
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/ingresos/<int:ingreso_id>', methods=['PUT'])
-@role_required('admin', 'tecnico')
+@role_required('admin', 'tecnico', 'empleado')
 def update_ingreso(ingreso_id):
     """Actualiza un ingreso"""
     data = request.get_json() or {}
@@ -885,7 +924,7 @@ def update_ingreso(ingreso_id):
         
         # Actualizar otros campos si es necesario
         updates = {}
-        for key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'imei', 'falla_general', 'valor_total', 'estado_pago', 'estado_apagado', 'tiene_clave', 'tipo_clave', 'clave', 'garantia', 'estuche', 'bandeja_sim', 'color_bandeja_sim', 'visor_partido', 'estado_botones_detalle']:
+        for key in ['cliente_nombre', 'cliente_apellido', 'cliente_cedula', 'cliente_telefono', 'cliente_direccion', 'color', 'imei', 'imei_no_visible', 'falla_general', 'valor_total', 'estado_pago', 'estado_apagado', 'tiene_clave', 'tipo_clave', 'clave', 'garantia', 'estuche', 'bandeja_sim', 'color_bandeja_sim', 'visor_partido', 'estado_botones_detalle']:
             if key in data:
                 updates[key] = data[key]
 
@@ -924,11 +963,16 @@ def update_ingreso(ingreso_id):
                 return jsonify({'error': 'El teléfono del cliente solo debe contener números'}), 400
             updates['cliente_telefono'] = telefono
 
-        if 'imei' in updates:
-            imei_update = str(updates.get('imei') or '').strip()
-            if imei_update and (not imei_update.isdigit() or len(imei_update) != 15):
-                return jsonify({'error': 'El IMEI debe contener exactamente 15 números'}), 400
+        imei_no_visible = _to_bool(updates.get('imei_no_visible', ingreso_actual.get('imei_no_visible', False)))
+        if imei_no_visible:
+            updates['imei_no_visible'] = True
+            updates['imei'] = ''
+        elif 'imei' in updates or 'imei_no_visible' in updates:
+            imei_update, imei_error = _normalize_imei_value(updates.get('imei', ingreso_actual.get('imei', '')))
+            if imei_error:
+                return jsonify({'error': imei_error}), 400
             updates['imei'] = imei_update
+            updates['imei_no_visible'] = False
 
         is_admin = current_user and current_user.get('rol') == 'admin'
         catalog_fields = {'marca_id', 'modelo_id', 'equipo_no_lista'}
