@@ -159,6 +159,28 @@ async function apiCall(endpoint, options = {}) {
         handleLogout();
         return;
     }
+
+    if (response.status === 422) {
+        const contentType422 = response.headers.get('Content-Type') || '';
+        if (contentType422.includes('application/json')) {
+            const payload422 = await response.json().catch(() => ({}));
+            const jwtMessage = String(payload422?.msg || payload422?.error || '').toLowerCase();
+            const isJwtError = jwtMessage.includes('authorization')
+                || jwtMessage.includes('token')
+                || jwtMessage.includes('jwt')
+                || jwtMessage.includes('signature')
+                || jwtMessage.includes('segments');
+
+            if (isJwtError) {
+                handleLogout();
+                return {
+                    error: 'Sesión vencida. Inicia sesión nuevamente.'
+                };
+            }
+
+            return payload422;
+        }
+    }
     
     const contentType = response.headers.get('Content-Type') || '';
     if (!contentType.includes('application/json')) {

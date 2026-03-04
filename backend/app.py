@@ -29,18 +29,36 @@ from models.ingreso import Ingreso
 from models.cliente import Cliente
 from models.nota import Nota
 from models.config import Configuracion
+from models.repuesto import Repuesto
 from models.database import DB_PATH
 from utils.thermal_printer import generate_ticket_data
 
 load_dotenv()
 
+
+def _background_workers_enabled():
+    value = os.getenv('CELUPRO_DISABLE_BACKGROUND_WORKERS', '').strip().lower()
+    return value not in ('1', 'true', 'yes', 'on')
+
 app = Flask(__name__)
 
+JWT_ACCESS_TOKEN_HOURS = max(1, int(os.getenv('JWT_ACCESS_TOKEN_HOURS', '72') or '72'))
+LOGIN_MAX_FAILED_ATTEMPTS = max(3, int(os.getenv('LOGIN_MAX_FAILED_ATTEMPTS', '5') or '5'))
+LOGIN_LOCKOUT_MINUTES = max(1, int(os.getenv('LOGIN_LOCKOUT_MINUTES', '15') or '15'))
+LOGIN_ATTEMPT_WINDOW_MINUTES = max(1, int(os.getenv('LOGIN_ATTEMPT_WINDOW_MINUTES', '15') or '15'))
+AUDIT_LOG_RETENTION_DAYS = int(os.getenv('AUDIT_LOG_RETENTION_DAYS', '180') or '180')
+AUDIT_RETENTION_CLEANUP_INTERVAL_MINUTES = max(5, int(os.getenv('AUDIT_RETENTION_CLEANUP_INTERVAL_MINUTES', '60') or '60'))
+_audit_retention_last_run_ts = 0.0
+_audit_retention_lock = threading.Lock()
+
 # Configuración
-app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'celupro-secret-key-2024')
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=72)
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'celupro-secure-default-key-2026-min-32-chars')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=JWT_ACCESS_TOKEN_HOURS)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB máximo
 app.config['UPLOAD_FOLDER'] = Path(__file__).resolve().parent.parent / 'frontend' / 'static' / 'logos'
+
+if len(str(app.config.get('JWT_SECRET_KEY') or '')) < 32:
+    print('Advertencia: JWT_SECRET_KEY debería tener mínimo 32 caracteres para mayor seguridad.')
 
 # Inicializar extensiones
 CORS(app)
@@ -68,6 +86,18 @@ def role_required(*roles):
             user = User.get_by_id(current_user_id)
             
             if not user or user['rol'] not in roles:
+                _audit_log(
+                    action='auth.role_denied',
+                    resource_type='endpoint',
+                    status='denied',
+                    details={
+                        'endpoint': request.path if request else None,
+                        'required_roles': list(roles),
+                        'actor_rol': user['rol'] if user else None
+                    },
+                    actor_user_id=current_user_id if user else None,
+                    actor_rol=user['rol'] if user else None
+                )
                 return jsonify({'error': 'Acceso denegado'}), 403
             
             return fn(*args, **kwargs)
@@ -139,6 +169,211 @@ def _safe_backup_path(filename):
     return candidate
 
 
+def _auth_client_ip():
+    forwarded_for = request.headers.get('X-Forwarded-For', '') if request else ''
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()[:64]
+    return (request.remote_addr or 'unknown')[:64] if request else 'unknown'
+
+
+def _parse_dt(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S'):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _get_login_attempt_row(username, ip_address):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        return conn.execute(
+            '''
+            SELECT username, ip_address, failed_count, first_failed_at, last_failed_at, locked_until
+            FROM auth_login_attempts
+            WHERE username = ? AND ip_address = ?
+            ''',
+            (username, ip_address)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def _is_login_locked(username, ip_address):
+    row = _get_login_attempt_row(username, ip_address)
+    if not row:
+        return False, 0
+
+    locked_until = _parse_dt(row['locked_until'])
+    now = datetime.now()
+    if locked_until and locked_until > now:
+        retry_seconds = int((locked_until - now).total_seconds())
+        return True, max(1, retry_seconds)
+
+    if locked_until and locked_until <= now:
+        _clear_login_attempts(username, ip_address)
+
+    return False, 0
+
+
+def _clear_login_attempts(username, ip_address):
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            'DELETE FROM auth_login_attempts WHERE username = ? AND ip_address = ?',
+            (username, ip_address)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _register_failed_login_attempt(username, ip_address):
+    now = datetime.now()
+    row = _get_login_attempt_row(username, ip_address)
+
+    if not row:
+        failed_count = 1
+        first_failed_at = now
+    else:
+        first_failed_at = _parse_dt(row['first_failed_at']) or now
+        window_minutes = (now - first_failed_at).total_seconds() / 60.0
+        if window_minutes > LOGIN_ATTEMPT_WINDOW_MINUTES:
+            failed_count = 1
+            first_failed_at = now
+        else:
+            failed_count = int(row['failed_count'] or 0) + 1
+
+    locked_until = None
+    if failed_count >= LOGIN_MAX_FAILED_ATTEMPTS:
+        locked_until = now + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            '''
+            INSERT INTO auth_login_attempts (
+                username, ip_address, failed_count, first_failed_at, last_failed_at, locked_until, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(username, ip_address) DO UPDATE SET
+                failed_count = excluded.failed_count,
+                first_failed_at = excluded.first_failed_at,
+                last_failed_at = excluded.last_failed_at,
+                locked_until = excluded.locked_until,
+                updated_at = CURRENT_TIMESTAMP
+            ''',
+            (
+                username,
+                ip_address,
+                failed_count,
+                first_failed_at.strftime('%Y-%m-%d %H:%M:%S'),
+                now.strftime('%Y-%m-%d %H:%M:%S'),
+                locked_until.strftime('%Y-%m-%d %H:%M:%S') if locked_until else None
+            )
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return failed_count, locked_until
+
+
+def _audit_log(action, resource_type=None, resource_id=None, status='success', details=None, actor_user_id=None, actor_rol=None):
+    try:
+        if actor_user_id is None:
+            try:
+                actor_user_id = int(get_jwt_identity())
+            except Exception:
+                actor_user_id = None
+
+        if actor_rol is None and actor_user_id:
+            try:
+                user = User.get_by_id(actor_user_id)
+                actor_rol = user.get('rol') if user else None
+            except Exception:
+                actor_rol = None
+
+        ip_address = request.headers.get('X-Forwarded-For', request.remote_addr) if request else None
+        user_agent = request.headers.get('User-Agent', '')[:255] if request else None
+
+        details_json = None
+        if details is not None:
+            try:
+                details_json = json.dumps(details, ensure_ascii=False)
+            except Exception:
+                details_json = json.dumps({'raw': str(details)}, ensure_ascii=False)
+
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO audit_logs (
+                    actor_user_id, actor_rol, action, resource_type, resource_id,
+                    status, ip_address, user_agent, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    actor_user_id,
+                    actor_rol,
+                    str(action or '')[:120],
+                    (str(resource_type)[:80] if resource_type else None),
+                    resource_id,
+                    status if status in ('success', 'denied', 'error') else 'success',
+                    (str(ip_address)[:64] if ip_address else None),
+                    user_agent,
+                    details_json
+                )
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        _run_audit_retention_cleanup(force=False)
+    except Exception:
+        pass
+
+
+def _run_audit_retention_cleanup(force=False):
+    global _audit_retention_last_run_ts
+
+    if AUDIT_LOG_RETENTION_DAYS <= 0:
+        return 0
+
+    now_ts = time.time()
+    interval_seconds = AUDIT_RETENTION_CLEANUP_INTERVAL_MINUTES * 60
+
+    if not force and (now_ts - _audit_retention_last_run_ts) < interval_seconds:
+        return 0
+
+    with _audit_retention_lock:
+        now_ts = time.time()
+        if not force and (now_ts - _audit_retention_last_run_ts) < interval_seconds:
+            return 0
+
+        _audit_retention_last_run_ts = now_ts
+
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM audit_logs WHERE created_at < datetime('now', ?)",
+                (f'-{int(AUDIT_LOG_RETENTION_DAYS)} days',)
+            )
+            deleted = int(cursor.rowcount or 0)
+            conn.commit()
+            return deleted
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
+
 def _create_backup_file():
     backup_dir = Path(__file__).resolve().parent.parent / 'backups'
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -190,7 +425,8 @@ def _start_backup_scheduler():
     thread.start()
 
 
-_start_backup_scheduler()
+if _background_workers_enabled():
+    _start_backup_scheduler()
 
 
 def _ensure_print_jobs_table():
@@ -453,23 +689,62 @@ def _start_backend_print_worker():
     thread.start()
 
 
-_start_backend_print_worker()
+if _background_workers_enabled():
+    _start_backend_print_worker()
 
 # ===== RUTAS DE AUTENTICACIÓN =====
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     """Login de usuario"""
-    data = request.get_json()
+    data = request.get_json() or {}
+    username = str(data.get('usuario') or '').strip()
+    ip_address = _auth_client_ip()
     
     if not data.get('usuario') or not data.get('contraseña'):
         return jsonify({'error': 'Usuario y contraseña requeridos'}), 400
+
+    locked, retry_seconds = _is_login_locked(username, ip_address)
+    if locked:
+        _audit_log(
+            action='auth.login',
+            resource_type='auth',
+            status='denied',
+            details={'usuario': username, 'reason': 'locked', 'retry_seconds': retry_seconds}
+        )
+        return jsonify({'error': 'Demasiados intentos fallidos. Intenta más tarde.', 'retry_seconds': retry_seconds}), 429
     
-    user = User.authenticate(data['usuario'], data['contraseña'])
+    user = User.authenticate(username, data['contraseña'])
     
     if not user:
+        failed_count, locked_until = _register_failed_login_attempt(username, ip_address)
+        is_now_locked = locked_until is not None
+        retry_seconds = int((locked_until - datetime.now()).total_seconds()) if locked_until else 0
+        _audit_log(
+            action='auth.login',
+            resource_type='auth',
+            status='denied',
+            details={
+                'usuario': username,
+                'reason': 'invalid_credentials',
+                'failed_count': failed_count,
+                'locked': is_now_locked
+            }
+        )
+        if is_now_locked:
+            return jsonify({'error': 'Demasiados intentos fallidos. Intenta más tarde.', 'retry_seconds': max(1, retry_seconds)}), 429
         return jsonify({'error': 'Credenciales inválidas'}), 401
     
     access_token = create_access_token(identity=str(user['id']))
+    _clear_login_attempts(username, ip_address)
+
+    _audit_log(
+        action='auth.login',
+        resource_type='auth',
+        status='success',
+        details={'usuario': user.get('usuario')},
+        actor_user_id=user.get('id'),
+        actor_rol=user.get('rol')
+    )
     
     return jsonify({
         'access_token': access_token,
@@ -480,6 +755,7 @@ def login():
             'rol': user['rol']
         }
     }), 200
+
 
 @app.route('/api/auth/me', methods=['GET'])
 @jwt_required()
@@ -849,6 +1125,19 @@ def create_ingreso():
             'cliente_telefono': data.get('cliente_telefono'),
             'cliente_direccion': data.get('cliente_direccion')
         })
+
+        _audit_log(
+            action='ingreso.create',
+            resource_type='ingreso',
+            resource_id=resultado.get('id'),
+            status='success',
+            details={
+                'numero_ingreso': resultado.get('numero_ingreso'),
+                'cliente_cedula': data.get('cliente_cedula'),
+                'tecnico_id': tecnico_id
+            },
+            actor_user_id=current_user_id
+        )
         
         return jsonify(resultado), 201
     except Exception as e:
@@ -885,6 +1174,13 @@ def delete_ingreso(ingreso_id):
             return jsonify({'error': 'Ingreso no encontrado'}), 404
 
         if str(ingreso_actual.get('estado_ingreso') or '').lower() == 'entregado':
+            _audit_log(
+                action='ingreso.delete',
+                resource_type='ingreso',
+                resource_id=ingreso_id,
+                status='denied',
+                details={'reason': 'entregado_bloqueado'}
+            )
             return jsonify({'error': 'No se puede eliminar un ingreso entregado desde Registros'}), 409
 
         Cliente.upsert({
@@ -895,6 +1191,13 @@ def delete_ingreso(ingreso_id):
             'cliente_direccion': ingreso_actual.get('cliente_direccion')
         })
         Ingreso.delete(ingreso_id)
+        _audit_log(
+            action='ingreso.delete',
+            resource_type='ingreso',
+            resource_id=ingreso_id,
+            status='success',
+            details={'numero_ingreso': ingreso_actual.get('numero_ingreso')}
+        )
         return jsonify({'success': True, 'message': 'Ingreso eliminado'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -914,6 +1217,36 @@ def update_ingreso(ingreso_id):
         ingreso_actual = Ingreso.get_by_id(ingreso_id)
         if not ingreso_actual:
             return jsonify({'error': 'Ingreso no encontrado'}), 404
+
+        actor_rol = (current_user or {}).get('rol') if current_user else None
+
+        if actor_rol == 'empleado':
+            allowed_empleado_fields = {'estado_ingreso', 'estado_pago'}
+            requested_fields = set(data.keys())
+            disallowed_fields = sorted(requested_fields - allowed_empleado_fields)
+            if disallowed_fields:
+                _audit_log(
+                    action='ingreso.update',
+                    resource_type='ingreso',
+                    resource_id=ingreso_id,
+                    status='denied',
+                    details={'reason': 'empleado_fields_not_allowed', 'fields': disallowed_fields},
+                    actor_user_id=current_user_id,
+                    actor_rol=actor_rol
+                )
+                return jsonify({'error': 'Empleado solo puede actualizar estado de entrega/pago'}), 403
+
+            if 'estado_ingreso' in data and str(data.get('estado_ingreso') or '').strip().lower() != 'entregado':
+                _audit_log(
+                    action='ingreso.update',
+                    resource_type='ingreso',
+                    resource_id=ingreso_id,
+                    status='denied',
+                    details={'reason': 'empleado_estado_no_permitido', 'estado_ingreso': data.get('estado_ingreso')},
+                    actor_user_id=current_user_id,
+                    actor_rol=actor_rol
+                )
+                return jsonify({'error': 'Empleado solo puede marcar ingresos como ENTREGADO'}), 403
 
         if str(ingreso_actual.get('estado_ingreso') or '').lower() == 'entregado':
             return jsonify({'error': 'Ingreso entregado bloqueado para edición. Usa Ingresar por Garantía.'}), 409
@@ -979,6 +1312,15 @@ def update_ingreso(ingreso_id):
         requested_catalog_update = any(field in data for field in catalog_fields)
 
         if requested_catalog_update and not is_admin:
+            _audit_log(
+                action='ingreso.update.catalogacion',
+                resource_type='ingreso',
+                resource_id=ingreso_id,
+                status='denied',
+                details={'reason': 'solo_admin'},
+                actor_user_id=current_user_id,
+                actor_rol=actor_rol
+            )
             return jsonify({'error': 'Solo admin puede actualizar marca/modelo del ingreso'}), 403
 
         if requested_catalog_update:
@@ -1023,6 +1365,20 @@ def update_ingreso(ingreso_id):
             'cliente_direccion': updates.get('cliente_direccion', ingreso_actual.get('cliente_direccion'))
         }
         Cliente.upsert(merged_cliente)
+
+        _audit_log(
+            action='ingreso.update',
+            resource_type='ingreso',
+            resource_id=ingreso_id,
+            status='success',
+            details={
+                'estado_ingreso': data.get('estado_ingreso'),
+                'estado_pago': updates.get('estado_pago') if updates else None,
+                'fields_updated': sorted(list(updates.keys())) if updates else []
+            },
+            actor_user_id=current_user_id,
+            actor_rol=actor_rol
+        )
         
         return jsonify({'success': True, 'message': 'Ingreso actualizado'}), 200
     except Exception as e:
@@ -1198,6 +1554,30 @@ def update_falla_notas(ingreso_falla_id):
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
+
+@app.route('/api/ingreso-fallas/<int:ingreso_falla_id>/repuesto', methods=['PUT'])
+@role_required('admin', 'tecnico')
+def update_falla_repuesto(ingreso_falla_id):
+    """Actualiza nombre/costo de repuesto usado en la falla."""
+    data = request.get_json() or {}
+
+    try:
+        ingreso_id = _get_ingreso_id_by_ingreso_falla(ingreso_falla_id)
+        if not ingreso_id:
+            return jsonify({'error': 'Falla de ingreso no encontrada'}), 404
+
+        if _is_ingreso_entregado(ingreso_id):
+            return jsonify({'error': 'No se puede actualizar repuesto en ingresos entregados. Usa Ingresar por Garantía.'}), 409
+
+        IngresoFalla.update_repuesto(
+            ingreso_falla_id,
+            data.get('repuesto_nombre', ''),
+            data.get('costo_repuesto', 0),
+        )
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
 @app.route('/api/ingreso-fallas/<int:ingreso_falla_id>', methods=['DELETE'])
 @role_required('admin', 'tecnico')
 def delete_ingreso_falla(ingreso_falla_id):
@@ -1267,6 +1647,14 @@ def ingresar_garantia(ingreso_id):
         Nota.create(ingreso_id, current_user_id, f"[GARANTIA][ABIERTA]: {comentario}", 'tecnica')
         Ingreso.update_estado(ingreso_id, 'en_reparacion')
         Ingreso.update(ingreso_id, {'garantia': True})
+        _audit_log(
+            action='ingreso.garantia',
+            resource_type='ingreso',
+            resource_id=ingreso_id,
+            status='success',
+            details={'comentario': comentario[:160]},
+            actor_user_id=current_user_id
+        )
         return jsonify({'success': True, 'message': 'Ingreso reabierto por garantía'}), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -1634,6 +2022,19 @@ def clear_all_ingresos_keep_clientes():
         finally:
             conn.close()
 
+        _audit_log(
+            action='admin.ingresos.clear',
+            resource_type='ingresos',
+            status='success',
+            details={
+                'deleted_ingresos': int(ingresos_count or 0),
+                'deleted_ingreso_fallas': int(fallas_count or 0),
+                'deleted_notas': int(notas_count or 0),
+                'deleted_print_jobs': int(jobs_count or 0),
+                'clientes_preservados': int(clientes_count or 0)
+            }
+        )
+
         return jsonify({
             'success': True,
             'message': 'Se eliminaron todos los ingresos sin borrar clientes',
@@ -1647,6 +2048,496 @@ def clear_all_ingresos_keep_clientes():
         }), 200
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/operacion/resumen', methods=['GET'])
+@role_required('admin')
+def get_admin_operacion_resumen():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        audit_counts_rows = conn.execute(
+            '''
+            SELECT status, COUNT(*) AS c
+            FROM audit_logs
+            WHERE datetime(created_at) >= datetime('now', '-24 hours')
+            GROUP BY status
+            '''
+        ).fetchall()
+        audit_counts = {'success': 0, 'denied': 0, 'error': 0}
+        for row in audit_counts_rows:
+            status = str(row['status'] or '').lower()
+            if status in audit_counts:
+                audit_counts[status] = int(row['c'] or 0)
+
+        recent_critical_rows = conn.execute(
+            '''
+            SELECT id, action, status, resource_type, resource_id, actor_rol, ip_address, created_at
+            FROM audit_logs
+            WHERE status IN ('denied', 'error')
+              AND datetime(created_at) >= datetime('now', '-24 hours')
+            ORDER BY id DESC
+            LIMIT 12
+            '''
+        ).fetchall()
+
+        print_rows = conn.execute(
+            '''
+            SELECT status, COUNT(*) AS c
+            FROM print_jobs
+            GROUP BY status
+            '''
+        ).fetchall()
+        print_counts = {'pending': 0, 'processing': 0, 'done': 0, 'error': 0}
+        for row in print_rows:
+            status = str(row['status'] or '').lower()
+            if status in print_counts:
+                print_counts[status] = int(row['c'] or 0)
+
+        stale_processing_row = conn.execute(
+            '''
+            SELECT COUNT(*) AS c
+            FROM print_jobs
+            WHERE status = 'processing'
+              AND datetime(claimed_at) <= datetime('now', '-10 minutes')
+            '''
+        ).fetchone()
+        stale_processing = int((stale_processing_row['c'] if stale_processing_row else 0) or 0)
+
+        pending_old_row = conn.execute(
+            '''
+            SELECT COUNT(*) AS c
+            FROM print_jobs
+            WHERE status = 'pending'
+              AND datetime(created_at) <= datetime('now', '-10 minutes')
+            '''
+        ).fetchone()
+        pending_old = int((pending_old_row['c'] if pending_old_row else 0) or 0)
+
+        worker_online_row = conn.execute(
+            '''
+            SELECT COUNT(*) AS c
+            FROM print_workers
+            WHERE datetime(last_seen) >= datetime('now', '-120 seconds')
+            '''
+        ).fetchone()
+        worker_total_row = conn.execute('SELECT COUNT(*) AS c FROM print_workers').fetchone()
+        workers_online = int((worker_online_row['c'] if worker_online_row else 0) or 0)
+        workers_total = int((worker_total_row['c'] if worker_total_row else 0) or 0)
+
+        lockouts_row = conn.execute(
+            '''
+            SELECT COUNT(*) AS c
+            FROM auth_login_attempts
+            WHERE locked_until IS NOT NULL
+              AND datetime(locked_until) > datetime('now')
+            '''
+        ).fetchone()
+        active_lockouts = int((lockouts_row['c'] if lockouts_row else 0) or 0)
+
+        recent_failed_auth_row = conn.execute(
+            '''
+            SELECT COUNT(*) AS c
+            FROM auth_login_attempts
+            WHERE datetime(last_failed_at) >= datetime('now', '-24 hours')
+              AND failed_count > 0
+            '''
+        ).fetchone()
+        recent_failed_auth = int((recent_failed_auth_row['c'] if recent_failed_auth_row else 0) or 0)
+
+        recent_critical_events = []
+        for row in recent_critical_rows:
+            recent_critical_events.append({
+                'id': row['id'],
+                'action': row['action'],
+                'status': row['status'],
+                'resource_type': row['resource_type'],
+                'resource_id': row['resource_id'],
+                'actor_rol': row['actor_rol'],
+                'ip_address': row['ip_address'],
+                'created_at': row['created_at'],
+            })
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'audit_last_24h': {
+                    'success': audit_counts['success'],
+                    'denied': audit_counts['denied'],
+                    'error': audit_counts['error'],
+                    'critical_total': audit_counts['denied'] + audit_counts['error']
+                },
+                'print_queue': {
+                    'pending': print_counts['pending'],
+                    'processing': print_counts['processing'],
+                    'done': print_counts['done'],
+                    'error': print_counts['error'],
+                    'stale_processing': stale_processing,
+                    'pending_old': pending_old
+                },
+                'workers': {
+                    'online': workers_online,
+                    'offline': max(workers_total - workers_online, 0),
+                    'total': workers_total
+                },
+                'auth': {
+                    'active_lockouts': active_lockouts,
+                    'recent_failed_identities_24h': recent_failed_auth
+                },
+                'recent_critical_events': recent_critical_events
+            }
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/auditoria', methods=['GET'])
+@role_required('admin')
+def get_auditoria_logs():
+    def _normalize_audit_filters(args):
+        limit = min(max(args.get('limit', 100, type=int), 1), 500)
+        page = max(args.get('page', 1, type=int), 1)
+        action = str(args.get('action') or '').strip().lower()
+        status = str(args.get('status') or '').strip().lower()
+        from_date = str(args.get('from_date') or '').strip()
+        to_date = str(args.get('to_date') or '').strip()
+
+        from_at = None
+        to_at = None
+
+        if from_date:
+            from_at = datetime.strptime(from_date, '%Y-%m-%d').strftime('%Y-%m-%d 00:00:00')
+        if to_date:
+            to_at = datetime.strptime(to_date, '%Y-%m-%d').strftime('%Y-%m-%d 23:59:59')
+
+        if from_at and to_at and from_at > to_at:
+            raise ValueError('El rango de fechas es inválido')
+
+        return {
+            'limit': limit,
+            'page': page,
+            'offset': (page - 1) * limit,
+            'action': action,
+            'status': status,
+            'from_date': from_date,
+            'to_date': to_date,
+            'from_at': from_at,
+            'to_at': to_at,
+        }
+
+    try:
+        filters = _normalize_audit_filters(request.args)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        base_query = '''
+            SELECT id, actor_user_id, actor_rol, action, resource_type, resource_id,
+                   status, ip_address, user_agent, details_json, created_at
+            FROM audit_logs
+            WHERE 1 = 1
+        '''
+        where_parts = []
+        where_params = []
+
+        if filters['action']:
+            where_parts.append(' AND action = ?')
+            where_params.append(filters['action'])
+
+        if filters['status'] in ('success', 'denied', 'error'):
+            where_parts.append(' AND status = ?')
+            where_params.append(filters['status'])
+
+        if filters['from_at']:
+            where_parts.append(' AND created_at >= ?')
+            where_params.append(filters['from_at'])
+
+        if filters['to_at']:
+            where_parts.append(' AND created_at <= ?')
+            where_params.append(filters['to_at'])
+
+        full_where = ''.join(where_parts)
+
+        count_query = f'SELECT COUNT(*) as total FROM audit_logs WHERE 1 = 1{full_where}'
+        total_row = conn.execute(count_query, tuple(where_params)).fetchone()
+        total = int((total_row['total'] if total_row else 0) or 0)
+
+        query = f'{base_query}{full_where} ORDER BY id DESC LIMIT ? OFFSET ?'
+        params = list(where_params)
+        params.extend([filters['limit'], filters['offset']])
+
+        rows = conn.execute(query, tuple(params)).fetchall()
+        data = []
+        for row in rows:
+            item = dict(row)
+            raw_details = item.get('details_json')
+            if raw_details:
+                try:
+                    item['details'] = json.loads(raw_details)
+                except Exception:
+                    item['details'] = raw_details
+            else:
+                item['details'] = None
+            item.pop('details_json', None)
+            data.append(item)
+
+        return jsonify({
+            'success': True,
+            'data': data,
+            'page': filters['page'],
+            'limit': filters['limit'],
+            'total': total,
+            'total_pages': ((total + filters['limit'] - 1) // filters['limit']) if total else 0,
+            'has_more': (filters['offset'] + len(data)) < total,
+            'filters': {
+                'action': filters['action'],
+                'status': filters['status'],
+                'from_date': filters['from_date'],
+                'to_date': filters['to_date'],
+            }
+        }), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/admin/auditoria/export', methods=['GET'])
+@role_required('admin')
+def export_auditoria_csv():
+    def _normalize_audit_filters(args):
+        action = str(args.get('action') or '').strip().lower()
+        status = str(args.get('status') or '').strip().lower()
+        from_date = str(args.get('from_date') or '').strip()
+        to_date = str(args.get('to_date') or '').strip()
+
+        from_at = None
+        to_at = None
+
+        if from_date:
+            from_at = datetime.strptime(from_date, '%Y-%m-%d').strftime('%Y-%m-%d 00:00:00')
+        if to_date:
+            to_at = datetime.strptime(to_date, '%Y-%m-%d').strftime('%Y-%m-%d 23:59:59')
+
+        if from_at and to_at and from_at > to_at:
+            raise ValueError('El rango de fechas es inválido')
+
+        return {
+            'action': action,
+            'status': status,
+            'from_at': from_at,
+            'to_at': to_at,
+        }
+
+    try:
+        filters = _normalize_audit_filters(request.args)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        query = '''
+            SELECT id, actor_user_id, actor_rol, action, resource_type, resource_id,
+                   status, ip_address, user_agent, details_json, created_at
+            FROM audit_logs
+            WHERE 1 = 1
+        '''
+        params = []
+
+        if filters['action']:
+            query += ' AND action = ?'
+            params.append(filters['action'])
+
+        if filters['status'] in ('success', 'denied', 'error'):
+            query += ' AND status = ?'
+            params.append(filters['status'])
+
+        if filters['from_at']:
+            query += ' AND created_at >= ?'
+            params.append(filters['from_at'])
+
+        if filters['to_at']:
+            query += ' AND created_at <= ?'
+            params.append(filters['to_at'])
+
+        query += ' ORDER BY id DESC'
+
+        rows = conn.execute(query, tuple(params)).fetchall()
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'id',
+            'actor_user_id',
+            'actor_rol',
+            'action',
+            'resource_type',
+            'resource_id',
+            'status',
+            'ip_address',
+            'user_agent',
+            'details_json',
+            'created_at',
+        ])
+
+        for row in rows:
+            writer.writerow([
+                row['id'] or '',
+                row['actor_user_id'] or '',
+                row['actor_rol'] or '',
+                row['action'] or '',
+                row['resource_type'] or '',
+                row['resource_id'] or '',
+                row['status'] or '',
+                row['ip_address'] or '',
+                row['user_agent'] or '',
+                row['details_json'] or '',
+                row['created_at'] or '',
+            ])
+
+        csv_bytes = io.BytesIO(output.getvalue().encode('utf-8-sig'))
+        output.close()
+
+        filename = f'auditoria_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
+        return send_file(csv_bytes, mimetype='text/csv', as_attachment=True, download_name=filename)
+    finally:
+        conn.close()
+
+
+@app.route('/api/inventario', methods=['GET'])
+@role_required('admin', 'tecnico')
+def get_inventario_repuestos():
+    include_inactive = str(request.args.get('include_inactive') or '').strip().lower() in ('1', 'true', 'yes')
+    data = Repuesto.get_all(include_inactive=include_inactive)
+    return jsonify({'success': True, 'data': data}), 200
+
+
+@app.route('/api/inventario', methods=['POST'])
+@role_required('admin')
+def create_inventario_repuesto():
+    data = request.get_json() or {}
+    nombre = str(data.get('nombre') or '').strip()
+    if not nombre:
+        return jsonify({'error': 'nombre requerido'}), 400
+
+    try:
+        repuesto_id = Repuesto.create(
+            nombre=nombre,
+            costo_unitario=float(data.get('costo_unitario') or 0),
+            precio_sugerido=float(data.get('precio_sugerido') or 0),
+            stock=int(data.get('stock') or 0),
+        )
+        return jsonify({'success': True, 'id': repuesto_id}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/inventario/<int:repuesto_id>', methods=['PUT'])
+@role_required('admin')
+def update_inventario_repuesto(repuesto_id):
+    data = request.get_json() or {}
+    nombre = str(data.get('nombre') or '').strip()
+    if not nombre:
+        return jsonify({'error': 'nombre requerido'}), 400
+
+    try:
+        Repuesto.update(
+            repuesto_id=repuesto_id,
+            nombre=nombre,
+            costo_unitario=float(data.get('costo_unitario') or 0),
+            precio_sugerido=float(data.get('precio_sugerido') or 0),
+            stock=int(data.get('stock') or 0),
+            activo=bool(data.get('activo', True)),
+        )
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/inventario/<int:repuesto_id>', methods=['DELETE'])
+@role_required('admin')
+def delete_inventario_repuesto(repuesto_id):
+    try:
+        Repuesto.delete(repuesto_id)
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/finanzas/resumen', methods=['GET'])
+@role_required('admin')
+def get_finanzas_resumen():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            '''
+            SELECT
+                i.id,
+                i.numero_ingreso,
+                i.fecha_ingreso,
+                i.fecha_entrega,
+                i.estado_ingreso,
+                i.cliente_nombre,
+                i.cliente_apellido,
+                COALESCE(i.valor_total, 0) AS venta_total,
+                COALESCE((
+                    SELECT SUM(COALESCE(inf.costo_repuesto, 0))
+                    FROM ingreso_fallas inf
+                    WHERE inf.ingreso_id = i.id
+                ), 0) AS costo_repuestos
+            FROM ingresos i
+            WHERE i.estado_ingreso IN ('reparado', 'entregado')
+            ORDER BY datetime(COALESCE(i.fecha_entrega, i.fecha_ingreso)) DESC
+            LIMIT 500
+            '''
+        ).fetchall()
+
+        data = []
+        total_ventas = 0.0
+        total_costos = 0.0
+
+        for row in rows:
+            venta = float(row['venta_total'] or 0)
+            costo = float(row['costo_repuestos'] or 0)
+            margen = venta - costo
+            total_ventas += venta
+            total_costos += costo
+            data.append({
+                'id': row['id'],
+                'numero_ingreso': row['numero_ingreso'],
+                'fecha_ingreso': row['fecha_ingreso'],
+                'fecha_entrega': row['fecha_entrega'],
+                'estado_ingreso': row['estado_ingreso'],
+                'cliente_nombre': row['cliente_nombre'],
+                'cliente_apellido': row['cliente_apellido'],
+                'venta_total': venta,
+                'costo_repuestos': costo,
+                'margen': margen,
+            })
+
+        margen_total = total_ventas - total_costos
+        margen_pct = (margen_total / total_ventas * 100.0) if total_ventas > 0 else 0.0
+
+        return jsonify({
+            'success': True,
+            'summary': {
+                'total_ventas': total_ventas,
+                'total_costos_repuestos': total_costos,
+                'margen_total': margen_total,
+                'margen_porcentaje': margen_pct,
+                'items': len(data),
+            },
+            'data': data,
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        conn.close()
 
 
 @app.route('/api/admin/csv/clientes/export', methods=['GET'])
@@ -1975,6 +2866,15 @@ def enqueue_print_job():
     finally:
         conn.close()
 
+    _audit_log(
+        action='print.job.enqueue',
+        resource_type='print_job',
+        resource_id=job_id,
+        status='success',
+        details={'ingreso_id': ingreso_id, 'target_printer': target_printer},
+        actor_user_id=requested_by
+    )
+
     return jsonify({
         'success': True,
         'job_id': job_id,
@@ -1982,6 +2882,8 @@ def enqueue_print_job():
         'target_printer': target_printer,
         'status': 'pending'
     }), 201
+
+
 
 
 @app.route('/api/print-workers/heartbeat', methods=['POST'])
@@ -2115,6 +3017,18 @@ def claim_print_job():
             except Exception:
                 payload = {}
 
+        _audit_log(
+            action='print.job.claim',
+            resource_type='print_job',
+            resource_id=job['id'],
+            status='success',
+            details={
+                'printer_name': printer_name,
+                'worker_type': worker_type,
+                'ingreso_id': job['ingreso_id']
+            }
+        )
+
         return jsonify({
             'success': True,
             'job': {
@@ -2150,6 +3064,12 @@ def complete_print_job(job_id):
         conn.commit()
         if cursor.rowcount == 0:
             return jsonify({'error': 'Trabajo no encontrado o no está en processing'}), 404
+        _audit_log(
+            action='print.job.complete',
+            resource_type='print_job',
+            resource_id=job_id,
+            status='success'
+        )
         return jsonify({'success': True}), 200
     finally:
         conn.close()
@@ -2184,6 +3104,14 @@ def fail_print_job(job_id):
             (next_status, error_message, next_status, job_id)
         )
         conn.commit()
+
+        _audit_log(
+            action='print.job.fail',
+            resource_type='print_job',
+            resource_id=job_id,
+            status='error' if next_status == 'error' else 'success',
+            details={'attempts': attempts, 'next_status': next_status, 'error': error_message[:160]}
+        )
 
         return jsonify({'success': True, 'status': next_status, 'attempts': attempts}), 200
     finally:
@@ -2272,6 +3200,12 @@ def actualizar_cliente_por_cedula(cedula):
         })
 
     return jsonify({'success': True, 'updated': len(ingresos)}), 200
+
+
+try:
+    _run_audit_retention_cleanup(force=True)
+except Exception:
+    pass
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5001)

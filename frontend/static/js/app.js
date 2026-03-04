@@ -9,11 +9,20 @@ let browserPrintBridgeBusy = false;
 let browserPrintBridgeWorkerName = null;
 let autoPrinterBootstrapRunning = false;
 let adminPrintStatusTimer = null;
+let adminAuditFilters = {
+    action: '',
+    status: '',
+    from_date: '',
+    to_date: '',
+    limit: 100,
+    page: 1
+};
 let clientesBusquedaActual = [];
 let clienteBusquedaIndiceActivo = -1;
 let dashboardChartYear = new Date().getFullYear();
 let autoLightingTimer = null;
 let quickEntregaCache = [];
+let inventarioEditingId = null;
 
 function getAmbientDarkness() {
     const now = new Date();
@@ -335,6 +344,8 @@ function buildMenu() {
             { icon: 'fa-file-import', label: 'Nuevo Ingreso', page: 'ingreso' },
             { icon: 'fa-list', label: 'Registros', page: 'registros' },
             { icon: 'fa-cogs', label: 'Técnico', page: 'tecnico' },
+            { icon: 'fa-boxes-stacked', label: 'Inventario', page: 'inventario' },
+            { icon: 'fa-coins', label: 'Finanzas', page: 'finanzas' },
             { icon: 'fa-wrench', label: 'Administración', page: 'admin' }
         ],
         'empleado': [
@@ -443,6 +454,20 @@ async function loadPage(page) {
                     content = '<div class="alert alert-danger">Acceso denegado</div>';
                 } else {
                     content = await loadAdminPanel();
+                }
+                break;
+            case 'inventario':
+                if (!user || user.rol !== 'admin') {
+                    content = '<div class="alert alert-danger">Acceso denegado</div>';
+                } else {
+                    content = await loadInventarioPanel();
+                }
+                break;
+            case 'finanzas':
+                if (!user || user.rol !== 'admin') {
+                    content = '<div class="alert alert-danger">Acceso denegado</div>';
+                } else {
+                    content = await loadFinanzasPanel();
                 }
                 break;
             default:
@@ -623,6 +648,8 @@ async function loadPage(page) {
             if (estadoFilter) {
                 estadoFilter.addEventListener('change', () => filtrarRegistros(1));
             }
+        } else if (page === 'inventario') {
+            resetInventarioForm();
         }
     } catch (error) {
         console.error('Error adding event listeners:', error);
@@ -3463,6 +3490,11 @@ async function loadAdminPanel() {
                 </a>
             </li>
             <li class="nav-item">
+                <a class="nav-link ${adminActiveTab === 'auditoria' ? 'active' : ''}" data-bs-toggle="tab" href="#auditoria">
+                    <i class="fas fa-clipboard-list me-2"></i> Auditoría
+                </a>
+            </li>
+            <li class="nav-item">
                 <a class="nav-link ${adminActiveTab === 'respaldo' ? 'active' : ''}" data-bs-toggle="tab" href="#respaldo">
                     <i class="fas fa-database me-2"></i> Respaldo
                 </a>
@@ -3490,6 +3522,9 @@ async function loadAdminPanel() {
             </div>
             <div id="impresion" class="tab-pane fade ${adminActiveTab === 'impresion' ? 'show active' : ''}">
                 ${await loadAdminPrintConfig()}
+            </div>
+            <div id="auditoria" class="tab-pane fade ${adminActiveTab === 'auditoria' ? 'show active' : ''}">
+                ${await loadAdminAuditoria()}
             </div>
             <div id="respaldo" class="tab-pane fade ${adminActiveTab === 'respaldo' ? 'show active' : ''}">
                 ${await loadAdminRespaldo()}
@@ -4087,6 +4122,623 @@ async function loadAdminRespaldo() {
             </div>
         </div>
     `;
+}
+
+async function loadInventarioPanel() {
+    const response = await apiCall('/inventario?include_inactive=1');
+    const items = Array.isArray(response?.data) ? response.data : [];
+
+    return `
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Inventario de Repuestos</h5>
+                <button class="btn btn-outline-secondary btn-sm" onclick="resetInventarioForm()">
+                    <i class="fas fa-rotate-left me-2"></i>Limpiar formulario
+                </button>
+            </div>
+            <div class="card-body">
+                <form id="inventarioForm" onsubmit="submitInventarioForm(event)">
+                    <input type="hidden" id="inventarioId">
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label class="form-label">Nombre repuesto</label>
+                            <input type="text" class="form-control" id="inventarioNombre" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Costo</label>
+                            <input type="number" class="form-control" id="inventarioCosto" min="0" step="0.01" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Precio sugerido</label>
+                            <input type="number" class="form-control" id="inventarioPrecio" min="0" step="0.01" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Stock</label>
+                            <input type="number" class="form-control" id="inventarioStock" min="0" step="1" required>
+                        </div>
+                        <div class="col-md-2 d-flex align-items-end">
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="inventarioActivo" checked>
+                                <label class="form-check-label" for="inventarioActivo">Activo</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2 mt-3">
+                        <button type="submit" class="btn btn-success btn-sm" id="inventarioSubmitBtn">
+                            <i class="fas fa-save me-2"></i>Guardar repuesto
+                        </button>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" onclick="resetInventarioForm()">
+                            Cancelar edición
+                        </button>
+                    </div>
+                </form>
+            </div>
+            <div class="card-body pt-0 p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Nombre</th>
+                                <th>Costo</th>
+                                <th>Precio sugerido</th>
+                                <th>Stock</th>
+                                <th>Activo</th>
+                                <th width="220">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${items.length ? items.map((item) => `
+                                <tr>
+                                    <td>${item.nombre}</td>
+                                    <td>$${Number(item.costo_unitario || 0).toLocaleString('es-CO')}</td>
+                                    <td>$${Number(item.precio_sugerido || 0).toLocaleString('es-CO')}</td>
+                                    <td>${Number(item.stock || 0)}</td>
+                                    <td>${Number(item.activo || 0) ? '<span class="badge bg-success">Sí</span>' : '<span class="badge bg-secondary">No</span>'}</td>
+                                    <td>
+                                        <button class="btn btn-sm btn-primary" onclick="startInventarioEdit(${item.id}, '${String(item.nombre).replace(/'/g, "\\'")}', ${Number(item.costo_unitario || 0)}, ${Number(item.precio_sugerido || 0)}, ${Number(item.stock || 0)}, ${Number(item.activo || 0)})">
+                                            <i class="fas fa-edit"></i>
+                                        </button>
+                                        <button class="btn btn-sm btn-danger" onclick="deleteInventarioItem(${item.id}, '${String(item.nombre).replace(/'/g, "\\'")}')">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </td>
+                                </tr>
+                            `).join('') : '<tr><td colspan="6" class="text-center text-muted">No hay repuestos registrados</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function resetInventarioForm() {
+    inventarioEditingId = null;
+    const idInput = document.getElementById('inventarioId');
+    const nombreInput = document.getElementById('inventarioNombre');
+    const costoInput = document.getElementById('inventarioCosto');
+    const precioInput = document.getElementById('inventarioPrecio');
+    const stockInput = document.getElementById('inventarioStock');
+    const activoInput = document.getElementById('inventarioActivo');
+    const submitBtn = document.getElementById('inventarioSubmitBtn');
+
+    if (idInput) idInput.value = '';
+    if (nombreInput) nombreInput.value = '';
+    if (costoInput) costoInput.value = '0';
+    if (precioInput) precioInput.value = '0';
+    if (stockInput) stockInput.value = '0';
+    if (activoInput) activoInput.checked = true;
+    if (submitBtn) submitBtn.innerHTML = '<i class="fas fa-save me-2"></i>Guardar repuesto';
+}
+
+function startInventarioEdit(id, nombre, costo, precio, stock, activo) {
+    inventarioEditingId = Number(id);
+    const idInput = document.getElementById('inventarioId');
+    const nombreInput = document.getElementById('inventarioNombre');
+    const costoInput = document.getElementById('inventarioCosto');
+    const precioInput = document.getElementById('inventarioPrecio');
+    const stockInput = document.getElementById('inventarioStock');
+    const activoInput = document.getElementById('inventarioActivo');
+    const submitBtn = document.getElementById('inventarioSubmitBtn');
+
+    if (idInput) idInput.value = String(id);
+    if (nombreInput) nombreInput.value = String(nombre || '');
+    if (costoInput) costoInput.value = String(Number(costo || 0));
+    if (precioInput) precioInput.value = String(Number(precio || 0));
+    if (stockInput) stockInput.value = String(Number(stock || 0));
+    if (activoInput) activoInput.checked = Boolean(Number(activo || 0));
+    if (submitBtn) submitBtn.innerHTML = '<i class="fas fa-save me-2"></i>Actualizar repuesto';
+}
+
+async function submitInventarioForm(event) {
+    event.preventDefault();
+
+    const nombre = String(document.getElementById('inventarioNombre')?.value || '').trim();
+    const costo = Number(document.getElementById('inventarioCosto')?.value || 0);
+    const precio = Number(document.getElementById('inventarioPrecio')?.value || 0);
+    const stock = Number(document.getElementById('inventarioStock')?.value || 0);
+    const activo = !!document.getElementById('inventarioActivo')?.checked;
+    const id = Number(document.getElementById('inventarioId')?.value || 0);
+
+    if (!nombre) {
+        showAlert('El nombre del repuesto es obligatorio', 'warning');
+        return;
+    }
+
+    const payload = {
+        nombre,
+        costo_unitario: Math.max(0, costo),
+        precio_sugerido: Math.max(0, precio),
+        stock: Math.max(0, Math.floor(stock)),
+        activo,
+    };
+
+    const endpoint = id ? `/inventario/${id}` : '/inventario';
+    const method = id ? 'PUT' : 'POST';
+
+    const response = await apiCall(endpoint, {
+        method,
+        body: JSON.stringify(payload)
+    });
+
+    if (response?.success) {
+        showAlert(id ? 'Repuesto actualizado correctamente' : 'Repuesto creado correctamente', 'success');
+        await loadPage('inventario');
+        setTimeout(() => {
+            resetInventarioForm();
+        }, 50);
+        return;
+    }
+
+    showAlert(response?.error || 'No se pudo guardar el repuesto', 'danger');
+}
+
+async function loadFinanzasPanel() {
+    const response = await apiCall('/finanzas/resumen');
+    const summary = response?.summary || {};
+    const items = Array.isArray(response?.data) ? response.data : [];
+
+    return `
+        <div class="row g-3 mb-3">
+            <div class="col-md-3">
+                <div class="card border-0 bg-light h-100">
+                    <div class="card-body">
+                        <div class="small text-muted">Ventas</div>
+                        <div class="h5 mb-0">$${Number(summary.total_ventas || 0).toLocaleString('es-CO')}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card border-0 bg-light h-100">
+                    <div class="card-body">
+                        <div class="small text-muted">Costo repuestos</div>
+                        <div class="h5 mb-0">$${Number(summary.total_costos_repuestos || 0).toLocaleString('es-CO')}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card border-0 bg-light h-100">
+                    <div class="card-body">
+                        <div class="small text-muted">Margen</div>
+                        <div class="h5 mb-0">$${Number(summary.margen_total || 0).toLocaleString('es-CO')}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card border-0 bg-light h-100">
+                    <div class="card-body">
+                        <div class="small text-muted">Margen %</div>
+                        <div class="h5 mb-0">${Number(summary.margen_porcentaje || 0).toFixed(2)}%</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Detalle de margen por ingreso</h5>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Ingreso</th>
+                                <th>Cliente</th>
+                                <th>Estado</th>
+                                <th>Venta</th>
+                                <th>Costo repuestos</th>
+                                <th>Margen</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${items.length ? items.map((item) => `
+                                <tr>
+                                    <td>${item.numero_ingreso}</td>
+                                    <td>${item.cliente_nombre || ''} ${item.cliente_apellido || ''}</td>
+                                    <td>${formatEstadoIngresoLabel(item.estado_ingreso)}</td>
+                                    <td>$${Number(item.venta_total || 0).toLocaleString('es-CO')}</td>
+                                    <td>$${Number(item.costo_repuestos || 0).toLocaleString('es-CO')}</td>
+                                    <td><strong>$${Number(item.margen || 0).toLocaleString('es-CO')}</strong></td>
+                                </tr>
+                            `).join('') : '<tr><td colspan="6" class="text-center text-muted">No hay datos para mostrar</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+async function openInventarioCreatePrompt() {
+    resetInventarioForm();
+    const nombreInput = document.getElementById('inventarioNombre');
+    if (nombreInput) nombreInput.focus();
+}
+
+async function openInventarioEditPrompt(id, nombre, costo, precio, stock, activo) {
+    startInventarioEdit(id, nombre, costo, precio, stock, activo);
+    const nombreInput = document.getElementById('inventarioNombre');
+    if (nombreInput) nombreInput.focus();
+}
+
+async function deleteInventarioItem(id, nombre) {
+    if (!await showConfirmModal(`¿Eliminar el repuesto "${nombre}"?`, {
+        title: 'Eliminar repuesto',
+        confirmText: 'Eliminar'
+    })) {
+        return;
+    }
+
+    const response = await apiCall(`/inventario/${id}`, {
+        method: 'DELETE'
+    });
+
+    if (response?.success) {
+        showAlert('Repuesto eliminado correctamente', 'success');
+        loadPage('inventario');
+        return;
+    }
+
+    showAlert(response?.error || 'No se pudo eliminar el repuesto', 'danger');
+}
+
+async function loadAdminAuditoria() {
+    const filters = {
+        action: String(adminAuditFilters?.action || '').trim().toLowerCase(),
+        status: String(adminAuditFilters?.status || '').trim().toLowerCase(),
+        from_date: String(adminAuditFilters?.from_date || '').trim(),
+        to_date: String(adminAuditFilters?.to_date || '').trim(),
+        limit: Math.min(Math.max(parseInt(adminAuditFilters?.limit || 100, 10) || 100, 1), 500),
+        page: Math.max(parseInt(adminAuditFilters?.page || 1, 10) || 1, 1)
+    };
+
+    const params = new URLSearchParams();
+    params.set('limit', String(filters.limit));
+    params.set('page', String(filters.page));
+    if (filters.action) params.set('action', filters.action);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.from_date) params.set('from_date', filters.from_date);
+    if (filters.to_date) params.set('to_date', filters.to_date);
+
+    const escapeHtml = (value) => String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    try {
+        let summary = null;
+        try {
+            const summaryResponse = await apiCall('/admin/operacion/resumen');
+            summary = summaryResponse?.data || null;
+        } catch (_) {
+        }
+
+        const response = await apiCall(`/admin/auditoria?${params.toString()}`);
+        const logs = Array.isArray(response?.data) ? response.data : [];
+        const total = Number(response?.total || 0);
+        const totalPages = Math.max(Number(response?.total_pages || 0), 0);
+        const page = Math.max(Number(response?.page || filters.page || 1), 1);
+        const hasMore = Boolean(response?.has_more);
+        const hasPrev = page > 1;
+        const shownStart = total > 0 ? ((page - 1) * filters.limit) + 1 : 0;
+        const shownEnd = total > 0 ? Math.min(((page - 1) * filters.limit) + logs.length, total) : 0;
+
+        const statusBadgeClass = (status) => {
+            if (status === 'success') return 'bg-success';
+            if (status === 'denied') return 'bg-warning text-dark';
+            if (status === 'error') return 'bg-danger';
+            return 'bg-secondary';
+        };
+
+        const renderObservabilitySummary = () => {
+            if (!summary) return '';
+
+            const audit = summary?.audit_last_24h || {};
+            const queue = summary?.print_queue || {};
+            const workers = summary?.workers || {};
+            const auth = summary?.auth || {};
+            const criticalEvents = Array.isArray(summary?.recent_critical_events) ? summary.recent_critical_events : [];
+
+            return `
+                <div class="mb-3">
+                    <div class="row g-2">
+                        <div class="col-md-3">
+                            <div class="card h-100 border-0 bg-light">
+                                <div class="card-body py-3">
+                                    <div class="text-muted small">Auditoría crítica (24h)</div>
+                                    <div class="h4 mb-0">${Number(audit.critical_total || 0)}</div>
+                                    <small class="text-muted">Denied: ${Number(audit.denied || 0)} · Error: ${Number(audit.error || 0)}</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card h-100 border-0 bg-light">
+                                <div class="card-body py-3">
+                                    <div class="text-muted small">Cola impresión</div>
+                                    <div class="h4 mb-0">${Number(queue.pending || 0)}</div>
+                                    <small class="text-muted">processing: ${Number(queue.processing || 0)} · error: ${Number(queue.error || 0)}</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card h-100 border-0 bg-light">
+                                <div class="card-body py-3">
+                                    <div class="text-muted small">Workers online</div>
+                                    <div class="h4 mb-0">${Number(workers.online || 0)} / ${Number(workers.total || 0)}</div>
+                                    <small class="text-muted">offline: ${Number(workers.offline || 0)}</small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="card h-100 border-0 bg-light">
+                                <div class="card-body py-3">
+                                    <div class="text-muted small">Seguridad login</div>
+                                    <div class="h4 mb-0">${Number(auth.active_lockouts || 0)}</div>
+                                    <small class="text-muted">lockouts activos · fallidos 24h: ${Number(auth.recent_failed_identities_24h || 0)}</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <small class="text-muted">Generado: ${escapeHtml(summary?.generated_at || 'N/A')} · cola antigua (&gt;10m): ${Number(queue.pending_old || 0)} · processing estancado (&gt;10m): ${Number(queue.stale_processing || 0)}</small>
+                    </div>
+                    <div class="mt-3 table-responsive">
+                        <table class="table table-sm table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th colspan="5">Eventos críticos recientes (24h)</th>
+                                </tr>
+                                <tr>
+                                    <th>Fecha</th>
+                                    <th>Acción</th>
+                                    <th>Estado</th>
+                                    <th>Recurso</th>
+                                    <th>Rol/IP</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${criticalEvents.length ? criticalEvents.map((event) => {
+                                    const status = String(event?.status || '').toLowerCase();
+                                    return `
+                                        <tr>
+                                            <td>${escapeHtml(event?.created_at || 'N/A')}</td>
+                                            <td><code>${escapeHtml(event?.action || '-')}</code></td>
+                                            <td><span class="badge ${statusBadgeClass(status)}">${escapeHtml(status || 'n/a')}</span></td>
+                                            <td>${escapeHtml(event?.resource_type || '-')}:${escapeHtml(event?.resource_id || '-')}</td>
+                                            <td>${escapeHtml(event?.actor_rol || '-')} · ${escapeHtml(event?.ip_address || '-')}</td>
+                                        </tr>
+                                    `;
+                                }).join('') : '<tr><td colspan="5" class="text-center text-muted">Sin eventos críticos recientes</td></tr>'}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        };
+
+        return `
+            <div class="card p-4">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                    <h5 class="mb-0">Auditoría de Acciones</h5>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-primary btn-sm" onclick="exportAdminAuditoriaCsv()">
+                            <i class="fas fa-file-csv me-1"></i>Exportar CSV
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="refreshAdminAuditoria()">
+                            <i class="fas fa-rotate me-1"></i>Actualizar
+                        </button>
+                    </div>
+                </div>
+
+                ${renderObservabilitySummary()}
+
+                <div class="row g-2 mb-3">
+                    <div class="col-md-3">
+                        <label class="form-label mb-1">Acción</label>
+                        <input type="text" id="auditActionFilter" class="form-control form-control-sm" value="${escapeHtml(filters.action)}" placeholder="Ej: login_success">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Estado</label>
+                        <select id="auditStatusFilter" class="form-select form-select-sm">
+                            <option value="" ${!filters.status ? 'selected' : ''}>Todos</option>
+                            <option value="success" ${filters.status === 'success' ? 'selected' : ''}>Success</option>
+                            <option value="denied" ${filters.status === 'denied' ? 'selected' : ''}>Denied</option>
+                            <option value="error" ${filters.status === 'error' ? 'selected' : ''}>Error</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Desde</label>
+                        <input type="date" id="auditFromDateFilter" class="form-control form-control-sm" value="${escapeHtml(filters.from_date)}">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Hasta</label>
+                        <input type="date" id="auditToDateFilter" class="form-control form-control-sm" value="${escapeHtml(filters.to_date)}">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1">Límite</label>
+                        <select id="auditLimitFilter" class="form-select form-select-sm">
+                            <option value="50" ${filters.limit === 50 ? 'selected' : ''}>50</option>
+                            <option value="100" ${filters.limit === 100 ? 'selected' : ''}>100</option>
+                            <option value="200" ${filters.limit === 200 ? 'selected' : ''}>200</option>
+                            <option value="500" ${filters.limit === 500 ? 'selected' : ''}>500</option>
+                        </select>
+                    </div>
+                    <div class="col-md-1 d-flex align-items-end">
+                        <button class="btn btn-primary btn-sm w-100" onclick="applyAdminAuditoriaFilters()">
+                            <i class="fas fa-filter me-1"></i>Filtrar
+                        </button>
+                    </div>
+                </div>
+
+                <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                    <small class="text-muted">Mostrando ${shownStart}-${shownEnd} de ${total} eventos</small>
+                    <div class="d-flex align-items-center gap-2">
+                        <button class="btn btn-outline-secondary btn-sm" onclick="changeAdminAuditoriaPage(-1)" ${hasPrev ? '' : 'disabled'}>
+                            <i class="fas fa-chevron-left me-1"></i>Anterior
+                        </button>
+                        <small class="text-muted">Página ${page}${totalPages ? ` / ${totalPages}` : ''}</small>
+                        <button class="btn btn-outline-secondary btn-sm" onclick="changeAdminAuditoriaPage(1)" ${hasMore ? '' : 'disabled'}>
+                            Siguiente<i class="fas fa-chevron-right ms-1"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Fecha</th>
+                                <th>Usuario/Rol</th>
+                                <th>Acción</th>
+                                <th>Recurso</th>
+                                <th>Estado</th>
+                                <th>IP</th>
+                                <th>Detalle</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${logs.length ? logs.map((item) => {
+                                const createdAt = item?.created_at ? new Date(item.created_at).toLocaleString('es-CO') : 'N/A';
+                                const actor = item?.actor_user_id ? `#${item.actor_user_id}` : '-';
+                                const role = item?.actor_rol || '-';
+                                const action = escapeHtml(item?.action || '-');
+                                const resource = `${escapeHtml(item?.resource_type || '-')}:${escapeHtml(item?.resource_id || '-')}`;
+                                const status = String(item?.status || '').toLowerCase();
+                                const ip = escapeHtml(item?.ip_address || '-');
+                                const details = item?.details ? escapeHtml(JSON.stringify(item.details)) : '-';
+                                return `
+                                    <tr>
+                                        <td>${escapeHtml(createdAt)}</td>
+                                        <td>${actor} <span class="text-muted">(${escapeHtml(role)})</span></td>
+                                        <td><code>${action}</code></td>
+                                        <td>${resource}</td>
+                                        <td><span class="badge ${statusBadgeClass(status)}">${escapeHtml(status || 'n/a')}</span></td>
+                                        <td>${ip}</td>
+                                        <td><small class="text-muted" title="${details}">${details.length > 120 ? `${details.slice(0, 120)}...` : details}</small></td>
+                                    </tr>
+                                `;
+                            }).join('') : '<tr><td colspan="7" class="text-center text-muted">No hay eventos para los filtros seleccionados</td></tr>'}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    } catch (error) {
+        return `
+            <div class="card p-4">
+                <h5 class="mb-3">Auditoría de Acciones</h5>
+                <div class="alert alert-danger mb-0">
+                    No se pudo cargar la auditoría: ${escapeHtml(error?.message || 'error desconocido')}
+                    <button class="btn btn-sm btn-outline-danger ms-2" onclick="refreshAdminAuditoria()">Reintentar</button>
+                </div>
+            </div>
+        `;
+    }
+}
+
+function applyAdminAuditoriaFilters() {
+    adminAuditFilters = {
+        action: (document.getElementById('auditActionFilter')?.value || '').trim().toLowerCase(),
+        status: (document.getElementById('auditStatusFilter')?.value || '').trim().toLowerCase(),
+        from_date: (document.getElementById('auditFromDateFilter')?.value || '').trim(),
+        to_date: (document.getElementById('auditToDateFilter')?.value || '').trim(),
+        limit: parseInt(document.getElementById('auditLimitFilter')?.value || '100', 10) || 100,
+        page: 1
+    };
+
+    adminActiveTab = 'auditoria';
+    loadPage('admin');
+}
+
+function changeAdminAuditoriaPage(delta) {
+    const nextPage = Math.max((parseInt(adminAuditFilters?.page || 1, 10) || 1) + Number(delta || 0), 1);
+    adminAuditFilters = {
+        ...adminAuditFilters,
+        page: nextPage
+    };
+
+    adminActiveTab = 'auditoria';
+    loadPage('admin');
+}
+
+function refreshAdminAuditoria() {
+    adminActiveTab = 'auditoria';
+    loadPage('admin');
+}
+
+async function exportAdminAuditoriaCsv() {
+    const filters = {
+        action: String(adminAuditFilters?.action || '').trim().toLowerCase(),
+        status: String(adminAuditFilters?.status || '').trim().toLowerCase(),
+        from_date: String(adminAuditFilters?.from_date || '').trim(),
+        to_date: String(adminAuditFilters?.to_date || '').trim(),
+    };
+
+    const params = new URLSearchParams();
+    if (filters.action) params.set('action', filters.action);
+    if (filters.status) params.set('status', filters.status);
+    if (filters.from_date) params.set('from_date', filters.from_date);
+    if (filters.to_date) params.set('to_date', filters.to_date);
+
+    try {
+        const response = await fetch(`${API_BASE}/admin/auditoria/export?${params.toString()}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+
+        if (!response.ok) {
+            let errorText = `Error ${response.status}`;
+            try {
+                const errorJson = await response.json();
+                errorText = errorJson.error || errorText;
+            } catch (_) {
+            }
+            showAlert(errorText, 'danger');
+            return;
+        }
+
+        const disposition = response.headers.get('Content-Disposition') || '';
+        const match = disposition.match(/filename="?([^";]+)"?/i);
+        const filename = match ? match[1] : `auditoria_${Date.now()}.csv`;
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(url);
+
+        showAlert('Auditoría exportada correctamente', 'success');
+    } catch (error) {
+        showAlert(`Error exportando auditoría: ${error.message}`, 'danger');
+    }
 }
 
 function updateBrowserPrintBridgeStatus(extra = '') {
@@ -5304,6 +5956,14 @@ async function verDetallesTecnico(ingresoId) {
         return;
     }
 
+    let inventarioItems = [];
+    try {
+        const inventarioResponse = await apiCall('/inventario');
+        inventarioItems = Array.isArray(inventarioResponse?.data) ? inventarioResponse.data : [];
+    } catch (_) {
+        inventarioItems = [];
+    }
+
     const ingresoBloqueado = response.estado_ingreso === 'entregado';
     
     const mainContent = document.getElementById('mainContent');
@@ -5461,25 +6121,47 @@ async function verDetallesTecnico(ingresoId) {
                                     <thead>
                                         <tr>
                                             <th>Falla</th>
+                                            <th>Repuesto</th>
+                                            <th>Costo repuesto</th>
                                             <th>Valor</th>
                                             <th>Estado</th>
                                             <th>Acciones</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        ${response.fallas.map(f => `
+                                        ${response.fallas.map((f) => {
+                                            const ingresoFallaId = Number(f.id || f.ingreso_falla_id || 0);
+                                            return `
                                             <tr>
                                                 <td>${f.nombre}</td>
+                                                <td>
+                                                    <select class="form-select form-select-sm mb-1"
+                                                            id="repuestoSelect_${ingresoFallaId}"
+                                                            ${ingresoBloqueado ? 'disabled' : ''}
+                                                            onchange="updateRepuestoFromInventario(${ingresoFallaId}, this)">
+                                                        <option value="">No en inventario (compra externa)</option>
+                                                        ${inventarioItems.map((item) => `<option value="${item.nombre}" data-costo="${Number(item.costo_unitario || 0)}" ${String(item.nombre || '').toUpperCase() === String(f.repuesto_nombre || '').toUpperCase() ? 'selected' : ''}>${item.nombre}</option>`).join('')}
+                                                    </select>
+                                                    <small class="text-muted">Si no está en inventario, solo registra el costo.</small>
+                                                </td>
+                                                <td>
+                                                    <input type="number" class="form-control form-control-sm" 
+                                                           id="repuestoCosto_${ingresoFallaId}"
+                                                           value="${Number(f.costo_repuesto || 0)}" 
+                                                           min="0"
+                                                           ${ingresoBloqueado ? 'disabled' : ''}
+                                                           onchange="updateCostoRepuesto(${ingresoFallaId}, this.value)">
+                                                </td>
                                                 <td>
                                                     <input type="number" class="form-control form-control-sm" 
                                                            value="${f.valor_reparacion}" 
                                                            ${ingresoBloqueado ? 'disabled' : ''}
-                                                           onchange="updateValor(${f.id}, this.value)">
+                                                           onchange="updateValor(${ingresoFallaId}, this.value)">
                                                 </td>
                                                 <td>
                                                         <select class="form-select form-select-sm" 
                                                             ${ingresoBloqueado ? 'disabled' : ''}
-                                                            onchange="onDetalleFallaEstadoChange(${ingresoId}, ${f.id}, this.value)">
+                                                            onchange="onDetalleFallaEstadoChange(${ingresoId}, ${ingresoFallaId}, this.value)">
                                                         <option value="pendiente" ${f.estado_falla === 'pendiente' ? 'selected' : ''}>Pendiente</option>
                                                         <option value="reparada" ${f.estado_falla === 'reparada' ? 'selected' : ''}>Reparada</option>
                                                         <option value="no_reparable" ${f.estado_falla === 'no_reparable' ? 'selected' : ''}>No Reparable</option>
@@ -5488,12 +6170,13 @@ async function verDetallesTecnico(ingresoId) {
                                                 <td>
                                                     <button class="btn details-modern-btn details-modern-btn-delete" 
                                                             ${ingresoBloqueado ? 'disabled' : ''}
-                                                            onclick="removeFalla(${f.id})">
+                                                            onclick="removeFalla(${ingresoFallaId})">
                                                         <i class="fas fa-trash-can"></i><span>Quitar</span>
                                                     </button>
                                                 </td>
                                             </tr>
-                                        `).join('')}
+                                        `;
+                                        }).join('')}
                                     </tbody>
                                 </table>
                             </div>
@@ -6445,6 +7128,109 @@ async function updateValor(ingresoFallaId, nuevoValor) {
         console.error('Error en updateValor:', error);
         showAlert('Error al conectar con el servidor: ' + error.message, 'danger');
     }
+}
+
+async function updateRepuestoPayload(ingresoFallaId, payload) {
+    try {
+        const normalizedId = Number(ingresoFallaId || 0);
+        if (!Number.isInteger(normalizedId) || normalizedId <= 0) {
+            showAlert('No se pudo identificar la falla para guardar el costo del repuesto', 'warning');
+            return false;
+        }
+
+        const currentToken = localStorage.getItem('token');
+        const requestOptions = {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(currentToken ? { 'Authorization': `Bearer ${currentToken}` } : {})
+            },
+            body: JSON.stringify(payload)
+        };
+
+        const endpoints = [
+            `${API_BASE}/ingreso-fallas/${normalizedId}/repuesto`,
+            `${API_BASE}/ingreso-fallas/${normalizedId}/repuesto/`
+        ];
+
+        let response = null;
+        let parsed = null;
+        let lastStatus = 0;
+
+        for (const endpoint of endpoints) {
+            response = await fetch(endpoint, requestOptions);
+            lastStatus = Number(response?.status || 0);
+
+            const contentType = response.headers.get('Content-Type') || '';
+            if (contentType.includes('application/json')) {
+                parsed = await response.json().catch(() => ({}));
+            } else {
+                const rawText = await response.text().catch(() => '');
+                parsed = {
+                    error: `Respuesta no JSON (${response.status})`,
+                    raw: rawText
+                };
+            }
+
+            if (response.ok) break;
+            if (lastStatus !== 404) break;
+        }
+
+        if (lastStatus === 401) {
+            handleLogout();
+            return false;
+        }
+
+        if (response?.ok && parsed?.success) {
+            showAlert('Repuesto actualizado correctamente', 'success');
+            return true;
+        }
+
+        if (lastStatus === 404 && parsed?.error?.includes('Respuesta no JSON')) {
+            showAlert('No se encontró la ruta para guardar repuesto. Reinicia el backend para cargar la ruta nueva.', 'danger');
+            return false;
+        }
+
+        showAlert(parsed?.error || 'No se pudo actualizar repuesto', 'danger');
+        return false;
+    } catch (error) {
+        showAlert(`Error al actualizar repuesto: ${error.message}`, 'danger');
+        return false;
+    }
+}
+
+async function updateRepuestoFromInventario(ingresoFallaId, selectEl) {
+    const option = selectEl?.selectedOptions?.[0];
+    const repuestoNombre = String(option?.value || '').trim();
+    const costoDesdeInventario = Number(option?.dataset?.costo || 0);
+    const costoInput = document.getElementById(`repuestoCosto_${ingresoFallaId}`);
+    const costoActual = Number(costoInput?.value || 0);
+
+    const costo = repuestoNombre ? costoDesdeInventario : Math.max(0, costoActual);
+
+    if (costoInput) costoInput.value = String(costo);
+
+    await updateRepuestoPayload(ingresoFallaId, {
+        repuesto_nombre: repuestoNombre,
+        costo_repuesto: costo,
+    });
+}
+
+async function updateRepuestoNombre(ingresoFallaId, repuestoNombre) {
+    return updateRepuestoPayload(ingresoFallaId, {
+        repuesto_nombre: String(repuestoNombre || '').trim(),
+    });
+}
+
+async function updateCostoRepuesto(ingresoFallaId, costoRepuesto) {
+    const inventarioSelect = document.getElementById(`repuestoSelect_${ingresoFallaId}`);
+    const selectedOption = inventarioSelect?.selectedOptions?.[0];
+    const nombre = String(selectedOption?.value || '').trim();
+    const costo = Number(costoRepuesto || 0);
+    await updateRepuestoPayload(ingresoFallaId, {
+        repuesto_nombre: nombre,
+        costo_repuesto: Math.max(0, costo),
+    });
 }
 
 // Función para actualizar estado (ya existe pero mejoramos)

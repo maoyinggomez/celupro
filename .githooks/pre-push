@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+cd "$ROOT_DIR"
+
+echo "[pre-push] Ejecutando quality check..."
+bash scripts/maintenance/quality_check.sh
+
+echo "[pre-push] OK: quality check completado."

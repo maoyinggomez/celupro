@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from werkzeug.security import generate_password_hash
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'celupro.db')
+DB_PATH = os.getenv('CELUPRO_DB_PATH', os.path.join(os.path.dirname(__file__), 'celupro.db'))
 
 def init_db():
     """Inicializa la base de datos con el esquema completo"""
@@ -116,6 +116,8 @@ def init_db():
         ingreso_id INTEGER NOT NULL,
         falla_id INTEGER NOT NULL,
         valor_reparacion REAL DEFAULT 0,
+        repuesto_nombre TEXT,
+        costo_repuesto REAL DEFAULT 0,
         estado_falla TEXT DEFAULT 'pendiente' CHECK(estado_falla IN ('pendiente', 'reparada', 'no_reparable')),
         notas_falla TEXT,
         agregada_por INTEGER,
@@ -194,8 +196,56 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     ''')
+
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS repuestos_inventario (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT UNIQUE NOT NULL,
+            costo_unitario REAL DEFAULT 0,
+            precio_sugerido REAL DEFAULT 0,
+            stock INTEGER DEFAULT 0,
+            activo INTEGER DEFAULT 1,
+            fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS audit_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_user_id INTEGER,
+        actor_rol TEXT,
+        action TEXT NOT NULL,
+        resource_type TEXT,
+        resource_id INTEGER,
+        status TEXT DEFAULT 'success' CHECK(status IN ('success', 'denied', 'error')),
+        ip_address TEXT,
+        user_agent TEXT,
+        details_json TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (actor_user_id) REFERENCES usuarios(id)
+    )
+    ''')
+
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS auth_login_attempts (
+        username TEXT NOT NULL,
+        ip_address TEXT NOT NULL,
+        failed_count INTEGER DEFAULT 0,
+        first_failed_at TIMESTAMP,
+        last_failed_at TIMESTAMP,
+        locked_until TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (username, ip_address)
+    )
+    ''')
     
     conn.commit()
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_action_status ON audit_logs(action, status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_auth_login_attempts_locked_until ON auth_login_attempts(locked_until)")
 
     # Migraciones para bases existentes
     ensure_schema_updates(cursor, conn)
@@ -375,6 +425,9 @@ def ensure_schema_updates(cursor, conn):
     cursor.execute("PRAGMA table_info(fallas_catalogo)")
     columnas_fallas = {row[1] for row in cursor.fetchall()}
 
+    cursor.execute("PRAGMA table_info(ingreso_fallas)")
+    columnas_ingreso_fallas = {row[1] for row in cursor.fetchall()}
+
     if 'telefono' not in columnas_usuarios:
         cursor.execute("ALTER TABLE usuarios ADD COLUMN telefono TEXT")
 
@@ -432,6 +485,12 @@ def ensure_schema_updates(cursor, conn):
     if 'orden' not in columnas_fallas:
         cursor.execute("ALTER TABLE fallas_catalogo ADD COLUMN orden INTEGER DEFAULT 0")
 
+    if 'repuesto_nombre' not in columnas_ingreso_fallas:
+        cursor.execute("ALTER TABLE ingreso_fallas ADD COLUMN repuesto_nombre TEXT")
+
+    if 'costo_repuesto' not in columnas_ingreso_fallas:
+        cursor.execute("ALTER TABLE ingreso_fallas ADD COLUMN costo_repuesto REAL DEFAULT 0")
+
     cursor.execute(
         '''
         CREATE TABLE IF NOT EXISTS clientes (
@@ -449,6 +508,7 @@ def ensure_schema_updates(cursor, conn):
     cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_clientes_cedula ON clientes(cedula)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_print_jobs_status_created ON print_jobs(status, created_at)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_print_workers_last_seen ON print_workers(last_seen)")
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_repuestos_nombre ON repuestos_inventario(nombre)")
 
     cursor.execute("PRAGMA table_info(print_jobs)")
     columnas_print_jobs = {row[1] for row in cursor.fetchall()}

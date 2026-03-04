@@ -147,6 +147,8 @@ class IngresoFalla:
             fc.nombre,
             fc.descripcion,
             inf.valor_reparacion,
+            COALESCE(inf.repuesto_nombre, '') AS repuesto_nombre,
+            COALESCE(inf.costo_repuesto, 0) AS costo_repuesto,
             inf.estado_falla,
             inf.notas_falla,
             u.nombre as agregada_por
@@ -188,6 +190,23 @@ class IngresoFalla:
         """Agrega notas a una falla"""
         query = "UPDATE ingreso_fallas SET notas_falla = ? WHERE id = ?"
         db.execute_update(query, (notas_falla, ingreso_falla_id))
+        return True
+
+    @staticmethod
+    def update_repuesto(ingreso_falla_id, repuesto_nombre, costo_repuesto):
+        """Actualiza nombre/costo de repuesto asociado a una falla del ingreso."""
+        row = db.execute_single("SELECT ingreso_id FROM ingreso_fallas WHERE id = ?", (ingreso_falla_id,))
+        if not row:
+            raise Exception('Falla de ingreso no encontrada')
+
+        nombre = str(repuesto_nombre or '').strip().upper()
+        costo = float(costo_repuesto or 0)
+        if costo < 0:
+            raise Exception('El costo del repuesto no puede ser negativo')
+
+        query = "UPDATE ingreso_fallas SET repuesto_nombre = ?, costo_repuesto = ? WHERE id = ?"
+        db.execute_update(query, (nombre, costo, ingreso_falla_id))
+        IngresoFalla.recalculate_ingreso_from_fallas(row['ingreso_id'])
         return True
     
     @staticmethod

@@ -92,6 +92,8 @@ CREATE TABLE IF NOT EXISTS ingreso_fallas (
     ingreso_id INTEGER NOT NULL,
     falla_id INTEGER NOT NULL,
     valor_reparacion REAL DEFAULT 0,
+    repuesto_nombre TEXT,
+    costo_repuesto REAL DEFAULT 0,
     estado_falla TEXT DEFAULT 'pendiente' CHECK(estado_falla IN ('pendiente', 'reparada', 'no_reparable')),
     notas_falla TEXT,
     agregada_por INTEGER,
@@ -151,6 +153,45 @@ CREATE TABLE IF NOT EXISTS print_jobs (
     FOREIGN KEY (requested_by) REFERENCES usuarios(id)
 );
 
+-- Inventario de repuestos
+CREATE TABLE IF NOT EXISTS repuestos_inventario (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    nombre TEXT UNIQUE NOT NULL,
+    costo_unitario REAL DEFAULT 0,
+    precio_sugerido REAL DEFAULT 0,
+    stock INTEGER DEFAULT 0,
+    activo INTEGER DEFAULT 1,
+    fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Bitácora de auditoría de acciones sensibles
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id INTEGER,
+    actor_rol TEXT,
+    action TEXT NOT NULL,
+    resource_type TEXT,
+    resource_id INTEGER,
+    status TEXT DEFAULT 'success' CHECK(status IN ('success', 'denied', 'error')),
+    ip_address TEXT,
+    user_agent TEXT,
+    details_json TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (actor_user_id) REFERENCES usuarios(id)
+);
+
+-- Control de intentos de login para bloqueo temporal
+CREATE TABLE IF NOT EXISTS auth_login_attempts (
+    username TEXT NOT NULL,
+    ip_address TEXT NOT NULL,
+    failed_count INTEGER DEFAULT 0,
+    first_failed_at TIMESTAMP,
+    last_failed_at TIMESTAMP,
+    locked_until TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (username, ip_address)
+);
+
 -- ÍNDICES PARA RENDIMIENTO
 CREATE INDEX idx_usuarios_rol ON usuarios(rol);
 CREATE INDEX idx_usuarios_activo ON usuarios(activo);
@@ -164,6 +205,10 @@ CREATE INDEX idx_ingreso_fallas_falla ON ingreso_fallas(falla_id);
 CREATE INDEX idx_notas_ingreso ON notas_ingreso(ingreso_id);
 CREATE UNIQUE INDEX idx_clientes_cedula ON clientes(cedula);
 CREATE INDEX idx_print_jobs_status_created ON print_jobs(status, created_at);
+CREATE INDEX idx_audit_logs_created ON audit_logs(created_at DESC);
+CREATE INDEX idx_audit_logs_action_status ON audit_logs(action, status);
+CREATE INDEX idx_auth_login_attempts_locked_until ON auth_login_attempts(locked_until);
+CREATE UNIQUE INDEX idx_repuestos_nombre ON repuestos_inventario(nombre);
 
 -- VISTAS ÚTILES (Opcional)
 -- Ingreso completo con datos relacionados

@@ -148,6 +148,41 @@ python3 server.py
 
 > ℹ️ La base de datos se crea automáticamente en el primer inicio.
 
+## 🔐 Variables recomendadas para producción
+
+Antes de desplegar, crea `backend/.env` basado en `backend/.env.example` y ajusta como mínimo:
+
+- `JWT_SECRET_KEY`: usa una clave única y aleatoria de **32+ caracteres**.
+- `JWT_ACCESS_TOKEN_HOURS`: reduce duración del token según tu operación (por ejemplo, `8` o `12`).
+- `LOGIN_MAX_FAILED_ATTEMPTS`, `LOGIN_LOCKOUT_MINUTES`, `LOGIN_ATTEMPT_WINDOW_MINUTES`: define tu política de bloqueo.
+- `AUDIT_LOG_RETENTION_DAYS`: define cuántos días conservar auditoría (ej. `180`).
+- `AUDIT_RETENTION_CLEANUP_INTERVAL_MINUTES`: frecuencia de limpieza automática (ej. `60`).
+
+Checklist rápido:
+
+1. Nunca subir `backend/.env` al repositorio.
+2. Rotar `JWT_SECRET_KEY` cuando haya sospecha de exposición.
+3. Verificar periódicamente lockouts activos y eventos críticos en Admin.
+4. Ejecutar `bash scripts/maintenance/quality_check.sh` antes de liberar cambios.
+
+Para generar un `JWT_SECRET_KEY` robusto:
+
+```bash
+python3 scripts/maintenance/generate_jwt_secret.py
+```
+
+Para actualizar automáticamente `backend/.env` (crea backup del archivo si existe):
+
+```bash
+python3 scripts/maintenance/generate_jwt_secret.py --update-env backend/.env
+```
+
+En modo no interactivo (por ejemplo CI), confirma con:
+
+```bash
+python3 scripts/maintenance/generate_jwt_secret.py --update-env backend/.env --yes
+```
+
 ## 📖 Documentación
 
 - **Este README** - Guía completa del proyecto
@@ -163,6 +198,11 @@ Desde la raíz del proyecto (`celupro-clone/`):
 python3 scripts/maintenance/check_config.py
 python3 scripts/maintenance/debug_config.py
 python3 scripts/maintenance/reset_config.py
+python3 scripts/maintenance/generate_jwt_secret.py
+bash scripts/maintenance/post_deploy_check.sh
+
+# Calidad (smoke tests automáticos backend)
+bash scripts/maintenance/quality_check.sh
 
 # Pruebas manuales por API
 python3 scripts/manual_tests/test_simple.py
@@ -170,6 +210,63 @@ python3 scripts/manual_tests/test_config_get.py
 python3 scripts/manual_tests/test_full_flow.py
 python3 scripts/manual_tests/test_ticket_config.py
 ```
+
+Chequeo rápido post-despliegue (backend arriba y credenciales válidas):
+
+```bash
+bash scripts/maintenance/post_deploy_check.sh \
+    --base-url http://127.0.0.1:5001/api \
+    --user admin \
+    --password admin123
+```
+
+### 🚨 Runbook rápido de incidentes (warning / critical)
+
+Si el semáforo operativo pasa a `warning` o `critical`:
+
+1. Ejecuta primero el chequeo automático:
+
+```bash
+bash scripts/maintenance/post_deploy_check.sh
+```
+
+2. Revisa en Admin → Auditoría:
+- eventos `denied` y `error` de las últimas 24h,
+- IP/rol y acción afectada.
+
+3. Revisa en Admin → Impresión:
+- cola `pending_old` y `stale_processing`,
+- workers online/offline.
+
+4. Si hay degradación sostenida:
+- genera backup antes de cambios,
+- reinicia backend y vuelve a ejecutar post-deploy check,
+- si persiste, conserva evidencia (hora, endpoint, error) y escala.
+
+### ✅ Control de calidad recomendado antes de `git push`
+
+Este comando ejecuta pruebas automáticas de humo del backend sobre una base SQLite temporal aislada (no toca la BD real):
+
+```bash
+bash scripts/maintenance/quality_check.sh
+```
+
+Actualmente valida, entre otros:
+- login/autorización básica,
+- creación de ingreso con `IMEI no visible`,
+- rechazo de IMEI inválido (más de 2),
+- permisos de `empleado` para actualizar estado de ingreso.
+
+### 🔐 Retención automática de auditoría
+
+La tabla `audit_logs` ahora tiene limpieza automática para no crecer indefinidamente.
+
+Variables opcionales de entorno:
+
+- `AUDIT_LOG_RETENTION_DAYS` (por defecto: `180`): días a conservar en auditoría.
+- `AUDIT_RETENTION_CLEANUP_INTERVAL_MINUTES` (por defecto: `60`): frecuencia mínima de limpieza automática.
+
+Si defines `AUDIT_LOG_RETENTION_DAYS=0`, se desactiva la limpieza automática.
 
 ### 🖨️ Impresión remota automática (gratis)
 
@@ -373,6 +470,36 @@ cd backend && python3 app.py  # Se recrea automáticamente
 cd backend
 pip install -r requirements.txt
 ```
+
+## ✅ Go-Live y Operación (P6)
+
+### Checklist de salida a producción (10 puntos)
+
+1. `backend/.env` creado y fuera de Git.
+2. `JWT_SECRET_KEY` rotado con `generate_jwt_secret.py` (32+ caracteres).
+3. `JWT_ACCESS_TOKEN_HOURS` ajustado a operación real (`8-12` recomendado).
+4. Política de lockout validada (`LOGIN_MAX_FAILED_ATTEMPTS`, `LOGIN_LOCKOUT_MINUTES`, `LOGIN_ATTEMPT_WINDOW_MINUTES`).
+5. Retención de auditoría definida (`AUDIT_LOG_RETENTION_DAYS`).
+6. Impresión validada (agente local o impresora en red).
+7. Respaldos verificados (crear y descargar backup en Admin).
+8. `bash scripts/maintenance/quality_check.sh` en verde.
+9. `bash scripts/maintenance/post_deploy_check.sh` en verde.
+10. Revisión final de Admin → Auditoría y Dashboard semáforo sin alertas críticas persistentes.
+
+### Rutina semanal recomendada (15-20 min)
+
+- Revisar críticos 24h (`denied` / `error`) en Admin → Auditoría.
+- Revisar cola de impresión (`pending_old`, `stale_processing`, `error`).
+- Revisar lockouts activos y fallos de login recientes.
+- Generar backup y validar descarga.
+
+### Contingencia rápida
+
+1. Si hay degradación (`warning/critical` sostenido), ejecutar `post_deploy_check.sh`.
+2. Si falla impresión, validar workers online y cola antes de reiniciar servicios.
+3. Antes de cambios correctivos, generar backup.
+4. Aplicar corrección, reiniciar backend y repetir post-deploy check.
+5. Registrar hora, síntoma y acción tomada en la bitácora interna.
 
 ## 📋 Próximas mejoras (Roadmap)
 
