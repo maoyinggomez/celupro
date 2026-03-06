@@ -11,6 +11,9 @@
   - 1 Web Service (`celupro`)
   - 1 disco persistente (`/var/data`)
 
+Nota:
+- El repo fija Python `3.11.11` mediante `.python-version` para compatibilidad de dependencias.
+
 ## 3) Variables importantes
 - `JWT_SECRET_KEY`: obligatoria, usa una clave larga (32+ chars).
 - `CELUPRO_DB_PATH`: ya queda en `/var/data/celupro.db` (persistente).
