@@ -83,8 +83,8 @@ Accesible desde **cualquier navegador en red local (LAN)** con soporte multi-usu
 
 ```
 celupro-clone/
-├── backend/                    # API Flask
-│   ├── app.py                 # Aplicación principal (puerto 5001)
+├── backend/                    # Flask unificado (API + Frontend)
+│   ├── app.py                 # Aplicación principal (API + templates/static)
 │   ├── models/                # Modelos de datos
 │   │   ├── user.py
 │   │   ├── marca.py
@@ -96,8 +96,8 @@ celupro-clone/
 │   ├── utils/                 # Utilidades (impresora térmica)
 │   ├── requirements.txt       # Dependencias
 │   └── .env.example           # Variables de entorno de ejemplo
-├── frontend/                  # Interfaz web
-│   ├── server.py              # Servidor Flask (puerto 3000)
+├── frontend/                  # Recursos del frontend (servidos por backend/app.py)
+│   ├── server.py              # Legacy/dev opcional (no requerido en producción)
 │   ├── templates/
 │   │   ├── login.html
 │   │   └── dashboard.html
@@ -114,6 +114,8 @@ celupro-clone/
 │   └── manual_tests/          # Pruebas manuales por API
 ├── .venv/                     # Entorno virtual Python
 ├── uv.lock                    # Lock de dependencias
+├── render.yaml                # Configuracion de despliegue para Render
+├── DEPLOY_RENDER.md           # Guia corta de publicacion en Render
 └── README.md                  # Este archivo
 ```
 
@@ -132,21 +134,24 @@ cd backend
 pip install -r requirements.txt
 cd ..
 
-# 2. Inicia los servidores
-# Terminal 1: Backend (puerto 5001)
+# 2. Inicia un solo servidor
 cd backend
 python3 app.py
-
-# Terminal 2: Frontend (puerto 3000)
-cd frontend
-python3 server.py
 ```
 
 ### Acceso
-- **Local:** http://127.0.0.1:3000
-- **Red Local:** http://[TU_IP]:3000
+- **Local:** http://127.0.0.1:5001
+- **Red Local:** http://[TU_IP]:5001
 
 > ℹ️ La base de datos se crea automáticamente en el primer inicio.
+
+## ☁️ Publicar en Render
+
+Para desplegar en hosting usa la guia:
+
+- `DEPLOY_RENDER.md`
+
+Incluye un `render.yaml` listo para crear servicio web + disco persistente.
 
 ## 🔐 Variables recomendadas para producción
 
@@ -272,7 +277,7 @@ Si defines `AUDIT_LOG_RETENTION_DAYS=0`, se desactiva la limpieza automática.
 
 Para imprimir en la impresora del local desde cualquier dispositivo:
 
-1. Deja backend y frontend corriendo normalmente.
+1. Deja la app unificada corriendo (`backend/app.py`).
 2. En el **PC del local** (con la impresora conectada), ejecuta el agente:
 
 ```bash
@@ -298,13 +303,13 @@ Para impresión directa debes abrir el navegador del PC local con `--kiosk-print
 - macOS (Chrome):
 
 ```bash
-open -a "Google Chrome" --args --kiosk-printing --app="http://127.0.0.1:3000"
+open -a "Google Chrome" --args --kiosk-printing --app="http://127.0.0.1:5001"
 ```
 
 - Windows (Chrome):
 
 ```bat
-start chrome --kiosk-printing --app="http://127.0.0.1:3000"
+start chrome --kiosk-printing --app="http://127.0.0.1:5001"
 ```
 
 Luego, en Admin → Impresión:

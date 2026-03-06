@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: celupro
+    env: python
+    plan: starter
+    autoDeploy: true
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: gunicorn --chdir backend app:app --bind 0.0.0.0:$PORT
+    healthCheckPath: /
+    envVars:
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: CELUPRO_DB_PATH
+        value: /var/data/celupro.db
+      - key: CELUPRO_DISABLE_BACKGROUND_WORKERS
+        value: "false"
+
+disks:
+  - name: celupro-data
+    mountPath: /var/data
+    sizeGB: 1

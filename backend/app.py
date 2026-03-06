@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, render_template
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from datetime import timedelta, datetime
@@ -40,7 +40,19 @@ def _background_workers_enabled():
     value = os.getenv('CELUPRO_DISABLE_BACKGROUND_WORKERS', '').strip().lower()
     return value not in ('1', 'true', 'yes', 'on')
 
-app = Flask(__name__)
+BASE_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = BASE_DIR / 'frontend'
+TEMPLATE_DIR = FRONTEND_DIR / 'templates'
+STATIC_DIR = FRONTEND_DIR / 'static'
+
+app = Flask(
+    __name__,
+    template_folder=str(TEMPLATE_DIR),
+    static_folder=str(STATIC_DIR),
+    static_url_path='/static'
+)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 JWT_ACCESS_TOKEN_HOURS = max(1, int(os.getenv('JWT_ACCESS_TOKEN_HOURS', '72') or '72'))
 LOGIN_MAX_FAILED_ATTEMPTS = max(3, int(os.getenv('LOGIN_MAX_FAILED_ATTEMPTS', '5') or '5'))
@@ -55,7 +67,7 @@ _audit_retention_lock = threading.Lock()
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'celupro-secure-default-key-2026-min-32-chars')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=JWT_ACCESS_TOKEN_HOURS)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB máximo
-app.config['UPLOAD_FOLDER'] = Path(__file__).resolve().parent.parent / 'frontend' / 'static' / 'logos'
+app.config['UPLOAD_FOLDER'] = STATIC_DIR / 'logos'
 
 if len(str(app.config.get('JWT_SECRET_KEY') or '')) < 32:
     print('Advertencia: JWT_SECRET_KEY debería tener mínimo 32 caracteres para mayor seguridad.')
@@ -63,6 +75,25 @@ if len(str(app.config.get('JWT_SECRET_KEY') or '')) < 32:
 # Inicializar extensiones
 CORS(app)
 jwt = JWTManager(app)
+
+
+@app.context_processor
+def inject_cache_buster():
+    return {'cache_buster': int(time.time() * 1000)}
+
+
+@app.route('/')
+def login_page():
+    return render_template('login.html')
+
+
+@app.route('/dashboard')
+@app.route('/ingreso')
+@app.route('/registros')
+@app.route('/tecnico')
+@app.route('/admin')
+def app_shell_page():
+    return render_template('dashboard.html')
 
 # Inicializar base de datos
 try:
@@ -3208,5 +3239,6 @@ except Exception:
     pass
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5001)
+    port = int(os.getenv('PORT', '5001') or '5001')
+    app.run(debug=False, host='0.0.0.0', port=port)
 
