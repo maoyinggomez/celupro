@@ -5732,7 +5732,7 @@ async function verDetalles(ingresoId) {
                         <p><strong>Fecha de ingreso:</strong> ${fechaIngreso}</p>
                         <p><strong>Fecha de entrega:</strong> ${response.fecha_entrega ? fechaEntrega : 'Se registra automáticamente al marcar como ENTREGADO'}</p>
                         <p><strong>Estado del pago:</strong> ${clean(response.estado_pago)}</p>
-                        <p><strong>Valor total:</strong> <strong>$${Number(response.valor_total || 0).toLocaleString('es-CO')}</strong></p>
+                        <p><strong>Valor total:</strong> <strong>$ ${Number(response.valor_total || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 })}</strong></p>
                         <p><strong>Empleado:</strong> ${clean(response.empleado)}</p>
                         <p><strong>Técnico asignado:</strong> ${clean(response.tecnico)}</p>
                         <p><strong>Datos técnico:</strong> ${response.tecnico_cedula || response.tecnico_telefono ? `${response.tecnico_cedula ? `CC ${clean(response.tecnico_cedula, '')}` : ''}${response.tecnico_cedula && response.tecnico_telefono ? ' · ' : ''}${response.tecnico_telefono ? clean(response.tecnico_telefono, '') : ''}` : 'Opcional (se registra desde Panel de Técnicos)'}</p>
@@ -5965,6 +5965,28 @@ async function verDetallesTecnico(ingresoId) {
     }
 
     const ingresoBloqueado = response.estado_ingreso === 'entregado';
+    const yesNo = (value) => value ? 'SI' : 'NO';
+    const clean = (value, fallback = 'N/A') => {
+        if (value === null || value === undefined) return fallback;
+        const text = String(value).trim();
+        return text ? text : fallback;
+    };
+    const cleanFallaName = (value) => clean(value, '').replace(/\s*\(\$\s*[\d\.,]+\)\s*$/g, '').trim();
+    const tipoClave = clean(response.tipo_clave, '');
+    const claveTexto = response.tiene_clave
+        ? `${tipoClave ? `${tipoClave}: ` : ''}${clean(response.clave)}`
+        : 'NO APLICA';
+    const estadoBotonesDetalle = clean(response.estado_botones_detalle)
+        || (response.estado_botones ? 'REGULARES' : 'BUENOS COMPLETOS');
+    const fallasSeleccionadas = Array.isArray(response.fallas)
+        ? response.fallas.map((f) => cleanFallaName(f.nombre)).filter(Boolean)
+        : [];
+    const fallasSeleccionadasHtml = fallasSeleccionadas.length
+        ? fallasSeleccionadas.join(', ')
+        : 'Sin fallas seleccionadas';
+    const valorTotalFormateado = Number(response.valor_total || 0).toLocaleString('es-CO', {
+        maximumFractionDigits: 0
+    });
     
     const mainContent = document.getElementById('mainContent');
     
@@ -6077,34 +6099,53 @@ async function verDetallesTecnico(ingresoId) {
                 <h5 class="mb-0">Información General</h5>
             </div>
             <div class="card-body">
-                <div class="row">
-                    <div class="col-md-6">
-                        <p><strong>Cliente:</strong> ${response.cliente_nombre} ${response.cliente_apellido}</p>
-                        <p><strong>Cédula:</strong> ${response.cliente_cedula || 'N/A'}</p>
-                        <p><strong>Teléfono:</strong> ${response.cliente_telefono || 'N/A'}</p>
-                        <p><strong>Dirección:</strong> ${response.cliente_direccion || 'N/A'}</p>
+                <div class="row g-3">
+                    <div class="col-md-6 d-flex">
+                        <div class="border rounded p-3 w-100 h-100">
+                            <p><strong>Cliente:</strong> ${response.cliente_nombre} ${response.cliente_apellido}</p>
+                            <p><strong>Cédula:</strong> ${response.cliente_cedula || 'N/A'}</p>
+                            <p><strong>Teléfono:</strong> ${response.cliente_telefono || 'N/A'}</p>
+                            <p class="mb-0"><strong>Dirección:</strong> ${response.cliente_direccion || 'N/A'}</p>
+                        </div>
                     </div>
-                    <div class="col-md-6">
-                        <p><strong>Equipo:</strong> ${response.marca} ${response.modelo}</p>
-                        <p><strong>Color:</strong> ${response.color || 'N/A'}</p>
-                        <p><strong>Falla General:</strong> ${response.falla_general || 'N/A'}</p>
-                        <p><strong>Estado:</strong> <span class="registros-status-chip ${getRegistroStatusClass(response.estado_ingreso)}">${formatEstadoIngresoLabel(response.estado_ingreso)}</span></p>
+                    <div class="col-md-6 d-flex">
+                        <div class="border rounded p-3 w-100 h-100">
+                            <p><strong>Equipo:</strong> ${response.marca} ${response.modelo}</p>
+                            <p><strong>Color:</strong> ${response.color || 'N/A'}</p>
+                            <p><strong>IMEI:</strong> ${response.imei_no_visible ? 'NO VISIBLE' : clean(response.imei)}</p>
+                            <p><strong>Clave:</strong> ${claveTexto}</p>
+                            <p><strong>Bandeja SIM:</strong> ${yesNo(response.bandeja_sim)}${response.bandeja_sim ? ` (${clean(response.color_bandeja_sim, '')})` : ''}</p>
+                            <p><strong>Visor/Glass partido:</strong> ${yesNo(response.visor_partido)}</p>
+                            <p><strong>Estado de botones:</strong> ${estadoBotonesDetalle}</p>
+                            <p class="mb-0"><strong>Estado:</strong> <span class="registros-status-chip ${getRegistroStatusClass(response.estado_ingreso)}">${formatEstadoIngresoLabel(response.estado_ingreso)}</span></p>
+                        </div>
+                    </div>
+                </div>
+                <div class="row g-3 mt-1">
+                    <div class="col-12 d-flex">
+                        <div class="border rounded p-3 w-100 h-100">
+                            <p class="mb-0 text-break"><strong>Fallas seleccionadas:</strong> ${fallasSeleccionadasHtml}</p>
+                        </div>
                     </div>
                 </div>
                 <hr>
-                <div class="row">
-                    <div class="col-md-6">
-                        <p><strong>Fecha de Ingreso:</strong> ${new Date(response.fecha_ingreso).toLocaleString('es-ES')}</p>
+                <div class="row g-3">
+                    <div class="col-md-6 d-flex">
+                        <div class="border rounded p-3 w-100 h-100">
+                            <p class="mb-0"><strong>Fecha de Ingreso:</strong> ${new Date(response.fecha_ingreso).toLocaleString('es-ES')}</p>
+                        </div>
                     </div>
-                    <div class="col-md-6">
-                        <p><strong>Valor Total:</strong> <span class="details-modern-money"><strong>$${response.valor_total || 0}</strong></span></p>
+                    <div class="col-md-6 d-flex">
+                        <div class="border rounded p-3 w-100 h-100">
+                            <p class="mb-0"><strong>Valor Total:</strong> <span class="details-modern-money"><strong>$ ${valorTotalFormateado}</strong></span></p>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
         
         <div class="row">
-            <div class="col-md-8">
+            <div class="col-12">
                 <div class="card mb-4 details-modern-card">
                     <div class="card-header details-modern-card-header">
                         <h5 class="mb-0">Fallas y Reparaciones</h5>
@@ -6116,50 +6157,56 @@ async function verDetallesTecnico(ingresoId) {
                             </div>
                         ` : ''}
                         ${response.fallas && response.fallas.length > 0 ? `
-                            <div class="table-responsive">
-                                <table class="table table-sm">
+                            <div class="table-responsive tecnico-fallas-wrap">
+                                <table class="table table-sm tecnico-fallas-table align-middle">
                                     <thead>
                                         <tr>
-                                            <th>Falla</th>
-                                            <th>Repuesto</th>
-                                            <th>Costo repuesto</th>
-                                            <th>Valor</th>
-                                            <th>Estado</th>
-                                            <th>Acciones</th>
+                                            <th class="col-falla">Falla</th>
+                                            <th class="col-repuesto">Repuesto</th>
+                                            <th class="col-costo">Costo repuesto</th>
+                                            <th class="col-valor">Valor</th>
+                                            <th class="col-estado">Estado</th>
+                                            <th class="col-acciones">Acciones</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         ${response.fallas.map((f) => {
                                             const ingresoFallaId = Number(f.id || f.ingreso_falla_id || 0);
+                                            const repuestoNombreActual = String(f.repuesto_nombre || '').trim();
+                                            const repuestoNombreJs = repuestoNombreActual
+                                                .replace(/\\/g, '\\\\')
+                                                .replace(/'/g, "\\'");
+                                            const costoRepuestoFormateado = Number(f.costo_repuesto || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
+                                            const valorReparacionFormateado = Number(f.valor_reparacion || 0).toLocaleString('es-CO', { maximumFractionDigits: 0 });
                                             return `
                                             <tr>
-                                                <td>${f.nombre}</td>
-                                                <td>
-                                                    <select class="form-select form-select-sm mb-1"
-                                                            id="repuestoSelect_${ingresoFallaId}"
-                                                            ${ingresoBloqueado ? 'disabled' : ''}
-                                                            onchange="updateRepuestoFromInventario(${ingresoFallaId}, this)">
-                                                        <option value="">No en inventario (compra externa)</option>
-                                                        ${inventarioItems.map((item) => `<option value="${item.nombre}" data-costo="${Number(item.costo_unitario || 0)}" ${String(item.nombre || '').toUpperCase() === String(f.repuesto_nombre || '').toUpperCase() ? 'selected' : ''}>${item.nombre}</option>`).join('')}
-                                                    </select>
-                                                    <small class="text-muted">Si no está en inventario, solo registra el costo.</small>
+                                                <td class="col-falla">${f.nombre}</td>
+                                                <td class="col-repuesto">
+                                                    <div class="repuesto-resumen">
+                                                        <div class="repuesto-nombre ${repuestoNombreActual ? '' : 'is-empty'}">${repuestoNombreActual || 'Compra externa'}</div>
+                                                        <button type="button" class="btn btn-sm btn-outline-primary repuesto-edit-btn"
+                                                                ${ingresoBloqueado ? 'disabled' : ''}
+                                                                onclick="openRepuestoPanel(${ingresoFallaId}, '${repuestoNombreJs}', ${Number(f.costo_repuesto || 0)})">
+                                                            <i class="fas fa-pen-to-square me-1"></i>Editar repuesto
+                                                        </button>
+                                                    </div>
                                                 </td>
-                                                <td>
-                                                    <input type="number" class="form-control form-control-sm" 
-                                                           id="repuestoCosto_${ingresoFallaId}"
-                                                           value="${Number(f.costo_repuesto || 0)}" 
-                                                           min="0"
-                                                           ${ingresoBloqueado ? 'disabled' : ''}
-                                                           onchange="updateCostoRepuesto(${ingresoFallaId}, this.value)">
+                                                <td class="col-costo">
+                                                    <div class="cost-pill">$ ${costoRepuestoFormateado}</div>
                                                 </td>
-                                                <td>
-                                                    <input type="number" class="form-control form-control-sm" 
-                                                           value="${f.valor_reparacion}" 
-                                                           ${ingresoBloqueado ? 'disabled' : ''}
-                                                           onchange="updateValor(${ingresoFallaId}, this.value)">
+                                                <td class="col-valor">
+                                                    <div class="input-group input-group-sm money-input-group">
+                                                        <span class="input-group-text">$</span>
+                                                        <input type="text" class="form-control money-input valor-reparacion-input"
+                                                               value="${valorReparacionFormateado}"
+                                                               inputmode="numeric"
+                                                               ${ingresoBloqueado ? 'disabled' : ''}
+                                                               oninput="this.value = formatNumberCO(parseMonetaryValue(this.value || '0'))"
+                                                               onchange="updateValor(${ingresoFallaId}, this.value)">
+                                                    </div>
                                                 </td>
-                                                <td>
-                                                        <select class="form-select form-select-sm" 
+                                                <td class="col-estado">
+                                                        <select class="form-select form-select-sm estado-falla-select" 
                                                             ${ingresoBloqueado ? 'disabled' : ''}
                                                             onchange="onDetalleFallaEstadoChange(${ingresoId}, ${ingresoFallaId}, this.value)">
                                                         <option value="pendiente" ${f.estado_falla === 'pendiente' ? 'selected' : ''}>Pendiente</option>
@@ -6167,7 +6214,7 @@ async function verDetallesTecnico(ingresoId) {
                                                         <option value="no_reparable" ${f.estado_falla === 'no_reparable' ? 'selected' : ''}>No Reparable</option>
                                                     </select>
                                                 </td>
-                                                <td>
+                                                <td class="col-acciones">
                                                     <button class="btn details-modern-btn details-modern-btn-delete" 
                                                             ${ingresoBloqueado ? 'disabled' : ''}
                                                             onclick="removeFalla(${ingresoFallaId})">
@@ -6181,31 +6228,35 @@ async function verDetallesTecnico(ingresoId) {
                                 </table>
                             </div>
                         ` : '<p class="text-muted">Sin fallas registradas</p>'}
-                        
-                        <button class="btn details-modern-btn details-modern-btn-primary" ${ingresoBloqueado ? 'disabled' : ''} onclick="addNewFalla(${ingresoId})">
-                            <i class="fas fa-plus"></i><span>Agregar Falla</span>
-                        </button>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="col-md-4">
-                <div class="card details-modern-card">
-                    <div class="card-header details-modern-card-header">
-                        <h5 class="mb-0">Acciones</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="d-grid gap-2">
-                            <select class="form-select mb-2" ${ingresoBloqueado ? 'disabled' : ''} id="estadoSelect_${ingresoId}" onchange="onDetalleIngresoEstadoChange(${ingresoId}, this.value)">
-                                <option value="pendiente" ${response.estado_ingreso === 'pendiente' ? 'selected' : ''}>Pendiente</option>
-                                <option value="en_reparacion" ${response.estado_ingreso === 'en_reparacion' ? 'selected' : ''}>En Reparación</option>
-                                <option value="reparado" ${response.estado_ingreso === 'reparado' ? 'selected' : ''}>Reparado</option>
-                                <option value="no_reparable" ${response.estado_ingreso === 'no_reparable' ? 'selected' : ''}>No Reparable</option>
-                                <option value="entregado" ${response.estado_ingreso === 'entregado' ? 'selected' : ''}>Entregado</option>
-                            </select>
-                            <small class="text-muted">${ingresoBloqueado ? 'Estado bloqueado por trazabilidad. Usa garantía para reingresar.' : 'Cambia el estado desde la lista para aplicar inmediatamente.'}</small>
+
+                        <div class="tecnico-inline-actions mt-3">
+                            <div class="tecnico-inline-actions-main">
+                                <div class="tecnico-inline-item tecnico-inline-status">
+                                    <label class="form-label mb-1"><strong>Estado del ingreso</strong></label>
+                                    <select class="form-select" ${ingresoBloqueado ? 'disabled' : ''} id="estadoSelect_${ingresoId}" onchange="onDetalleIngresoEstadoChange(${ingresoId}, this.value)">
+                                        <option value="pendiente" ${response.estado_ingreso === 'pendiente' ? 'selected' : ''}>Pendiente</option>
+                                        <option value="en_reparacion" ${response.estado_ingreso === 'en_reparacion' ? 'selected' : ''}>En Reparación</option>
+                                        <option value="reparado" ${response.estado_ingreso === 'reparado' ? 'selected' : ''}>Reparado</option>
+                                        <option value="no_reparable" ${response.estado_ingreso === 'no_reparable' ? 'selected' : ''}>No Reparable</option>
+                                        <option value="entregado" ${response.estado_ingreso === 'entregado' ? 'selected' : ''}>Entregado</option>
+                                    </select>
+                                </div>
+                                <div class="tecnico-inline-item tecnico-inline-help">
+                                    <small class="text-muted">${ingresoBloqueado ? 'Estado bloqueado por trazabilidad. Usa garantía para reingresar.' : 'Cambia el estado desde la lista para aplicar inmediatamente.'}</small>
+                                </div>
+                            </div>
+
+                            <div class="tecnico-inline-actions-buttons">
+                                <button class="btn details-modern-btn details-modern-btn-primary" ${ingresoBloqueado ? 'disabled' : ''} onclick="addNewFalla(${ingresoId})">
+                                    <i class="fas fa-plus"></i><span>Agregar Falla</span>
+                                </button>
+                                <button class="btn details-modern-btn details-modern-btn-primary" onclick="printTicket(${ingresoId})">
+                                    <i class="fas fa-print"></i><span>Imprimir Ticket</span>
+                                </button>
+                            </div>
+
                             ${response.estado_ingreso === 'entregado' ? `
-                                <div class="details-modern-garantia-box">
+                                <div class="details-modern-garantia-box mt-2">
                                     <label class="form-label mb-1"><strong>Garantía</strong></label>
                                     <textarea class="form-control form-control-sm mb-2" id="garantiaComentario_${ingresoId}" rows="3" placeholder="Motivo de garantía (obligatorio)"></textarea>
                                     <button class="btn details-modern-btn details-modern-btn-warning w-100" onclick="procesarGarantiaEntregado(${ingresoId})">
@@ -6213,11 +6264,7 @@ async function verDetallesTecnico(ingresoId) {
                                     </button>
                                 </div>
                             ` : ''}
-                            <button class="btn details-modern-btn details-modern-btn-primary" onclick="printTicket(${ingresoId})">
-                                <i class="fas fa-print"></i><span>Imprimir Ticket</span>
-                            </button>
                         </div>
-                    </div>
                     </div>
                 </div>
             </div>
@@ -7106,7 +7153,7 @@ async function addNewFalla(ingresoId) {
 // Función para actualizar valor de reparación de una falla
 async function updateValor(ingresoFallaId, nuevoValor) {
     try {
-        const valor = parseFloat(nuevoValor);
+        const valor = Number(parseMonetaryValue(nuevoValor || '0'));
         if (isNaN(valor) || valor < 0) {
             showAlert('Ingresa un valor válido', 'warning');
             return;
@@ -7199,6 +7246,114 @@ async function updateRepuestoPayload(ingresoFallaId, payload) {
     }
 }
 
+async function openRepuestoPanel(ingresoFallaId, repuestoNombreActual = '', costoRepuestoActual = 0) {
+    const modalId = `modalRepuesto_${ingresoFallaId}_${Date.now()}`;
+    const safeNombre = String(repuestoNombreActual || '').trim().toUpperCase();
+    const costoInicial = Number(costoRepuestoActual || 0);
+
+    let inventarioItems = [];
+    try {
+        const inventarioResponse = await apiCall('/inventario');
+        inventarioItems = Array.isArray(inventarioResponse?.data) ? inventarioResponse.data : [];
+    } catch (_) {
+        inventarioItems = [];
+    }
+
+    const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.id = modalId;
+    modal.setAttribute('tabindex', '-1');
+
+    modal.innerHTML = `
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Editar Repuesto</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+                </div>
+                <div class="modal-body">
+                    <label class="form-label">Repuesto usado</label>
+                    <select class="form-select mb-3" id="${modalId}_repuestoSelect">
+                        <option value="">Compra externa (sin inventario)</option>
+                        ${inventarioItems.map((item) => {
+                            const nombre = String(item.nombre || '').trim();
+                            const costo = Number(item.costo_unitario || 0);
+                            const isSelected = nombre.toUpperCase() === safeNombre;
+                            return `<option value="${nombre}" data-costo="${costo}" ${isSelected ? 'selected' : ''}>${nombre}</option>`;
+                        }).join('')}
+                    </select>
+
+                    <label class="form-label">Costo del repuesto</label>
+                    <div class="input-group">
+                        <span class="input-group-text">$</span>
+                        <input type="text" class="form-control" id="${modalId}_costoInput" inputmode="numeric" value="${formatNumberCO(costoInicial)}">
+                    </div>
+                    <small class="text-muted d-block mt-2">Puedes dejar el repuesto vacío y guardar solo el costo.</small>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="button" class="btn btn-primary" id="${modalId}_saveBtn">Guardar cambios</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const repuestoSelect = modal.querySelector(`#${modalId}_repuestoSelect`);
+    const costoInput = modal.querySelector(`#${modalId}_costoInput`);
+    const saveBtn = modal.querySelector(`#${modalId}_saveBtn`);
+
+    if (repuestoSelect && !safeNombre) {
+        repuestoSelect.value = '';
+    }
+
+    if (costoInput) {
+        costoInput.addEventListener('input', () => {
+            costoInput.value = formatNumberCO(parseMonetaryValue(costoInput.value || '0'));
+        });
+    }
+
+    if (repuestoSelect && costoInput) {
+        repuestoSelect.addEventListener('change', () => {
+            const selected = repuestoSelect.selectedOptions?.[0];
+            const costo = Number(selected?.dataset?.costo || 0);
+            if (repuestoSelect.value) {
+                costoInput.value = formatNumberCO(costo);
+            }
+        });
+    }
+
+    if (saveBtn) {
+        saveBtn.addEventListener('click', async () => {
+            const repuestoNombre = String(repuestoSelect?.value || '').trim();
+            const costoRepuesto = Number(parseMonetaryValue(costoInput?.value || '0'));
+
+            const ok = await updateRepuestoPayload(ingresoFallaId, {
+                repuesto_nombre: repuestoNombre,
+                costo_repuesto: Math.max(0, costoRepuesto)
+            });
+
+            if (!ok) return;
+
+            const bsInstance = bootstrap.Modal.getInstance(modal);
+            if (bsInstance) bsInstance.hide();
+
+            const detalleIngresoId = Number(document.getElementById('detalleIngresoId')?.value || 0);
+            if (detalleIngresoId > 0) {
+                await verDetallesTecnico(detalleIngresoId);
+            }
+        });
+    }
+
+    modal.addEventListener('hidden.bs.modal', () => {
+        modal.remove();
+    }, { once: true });
+
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+}
+
 async function updateRepuestoFromInventario(ingresoFallaId, selectEl) {
     const option = selectEl?.selectedOptions?.[0];
     const repuestoNombre = String(option?.value || '').trim();
@@ -7208,7 +7363,7 @@ async function updateRepuestoFromInventario(ingresoFallaId, selectEl) {
 
     const costo = repuestoNombre ? costoDesdeInventario : Math.max(0, costoActual);
 
-    if (costoInput) costoInput.value = String(costo);
+    if (costoInput) costoInput.value = formatNumberCO(costo);
 
     await updateRepuestoPayload(ingresoFallaId, {
         repuesto_nombre: repuestoNombre,
@@ -7226,7 +7381,7 @@ async function updateCostoRepuesto(ingresoFallaId, costoRepuesto) {
     const inventarioSelect = document.getElementById(`repuestoSelect_${ingresoFallaId}`);
     const selectedOption = inventarioSelect?.selectedOptions?.[0];
     const nombre = String(selectedOption?.value || '').trim();
-    const costo = Number(costoRepuesto || 0);
+    const costo = Number(parseMonetaryValue(costoRepuesto || '0'));
     await updateRepuestoPayload(ingresoFallaId, {
         repuesto_nombre: nombre,
         costo_repuesto: Math.max(0, costo),
